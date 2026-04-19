@@ -1,0 +1,54 @@
+[package]
+name         = "elena-hannlys-smoke"
+version      = "1.0.0"
+description  = "Hannlys end-to-end smoke — multi-tenant Seed buyer flow + re-personalization against real Groq + Notion (via wiremock or live API)."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+publish      = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "elena-hannlys-smoke"
+path = "src/main.rs"
+
+[dependencies]
+elena-types             = { workspace = true }
+elena-config            = { workspace = true }
+elena-store             = { workspace = true }
+elena-llm               = { workspace = true }
+elena-tools             = { workspace = true }
+elena-context           = { workspace = true }
+elena-memory            = { workspace = true }
+elena-router            = { workspace = true }
+elena-core              = { workspace = true }
+elena-gateway           = { workspace = true }
+elena-worker            = { workspace = true }
+elena-plugins           = { workspace = true }
+elena-observability     = { workspace = true }
+elena-auth              = { workspace = true }
+elena-connector-notion  = { path = "../elena-connector-notion" }
+
+tokio              = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+tokio-util         = { workspace = true }
+tokio-tungstenite  = { workspace = true }
+tokio-stream       = { workspace = true, features = ["net"] }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow             = { workspace = true }
+secrecy            = { workspace = true }
+futures            = { workspace = true }
+chrono             = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+async-nats         = { workspace = true }
+jsonwebtoken       = { workspace = true }
+axum               = { workspace = true }
+tonic              = { workspace = true }
+reqwest            = { workspace = true }
+sqlx               = { workspace = true }
+testcontainers         = { workspace = true }
+testcontainers-modules = { workspace = true }
+wiremock               = { workspace = true }
