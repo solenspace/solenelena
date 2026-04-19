@@ -1,0 +1,212 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/elena-types",
+    "crates/elena-config",
+    "crates/elena-store",
+    "crates/elena-llm",
+    "crates/elena-tools",
+    "crates/elena-context",
+    "crates/elena-memory",
+    "crates/elena-router",
+    "crates/elena-core",
+    "crates/elena-gateway",
+    "crates/elena-worker",
+    "crates/elena-plugins",
+    "crates/elena-observability",
+    "crates/elena-auth",
+    "crates/elena-admin",
+    "bins/elena-phase1-smoke",
+    "bins/elena-phase2-smoke",
+    "bins/elena-phase3-smoke",
+    "bins/elena-phase4-smoke",
+    "bins/elena-phase5-smoke",
+    "bins/elena-phase6-smoke",
+    "bins/elena-phase7-smoke",
+    "bins/elena-connector-echo",
+    "bins/elena-connector-slack",
+    "bins/elena-connector-notion",
+    "bins/elena-connector-sheets",
+    "bins/elena-connector-shopify",
+    "bins/elena-hannlys-smoke",
+    "bins/elena-server",
+    "bins/elena-solen-smoke",
+]
+
+[workspace.package]
+edition      = "2024"
+rust-version = "1.85"
+license      = "Apache-2.0"
+repository   = "https://github.com/solen/elena"
+
+[workspace.lints.rust]
+unsafe_code                   = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub               = "warn"
+rust_2018_idioms              = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic                = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc      = "allow"
+missing_panics_doc      = "allow"
+must_use_candidate      = "warn"
+unwrap_used             = "deny"
+expect_used             = "deny"
+panic                   = "deny"
+todo                    = "warn"
+dbg_macro               = "deny"
+print_stdout            = "warn"
+print_stderr            = "warn"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.42", features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+    "signal",
+] }
+
+# Serialization
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Errors
+thiserror = "2"
+anyhow    = "1"
+
+# Identifiers
+ulid = { version = "1.1", features = ["serde", "uuid"] }
+uuid = { version = "1.11", features = ["serde", "v4"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Bytes
+bytes = { version = "1.9", features = ["serde"] }
+
+# Secrets
+secrecy = { version = "0.10", features = ["serde"] }
+
+# Database
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+    "migrate",
+    "macros",
+] }
+pgvector = { version = "0.4", features = ["sqlx", "postgres"] }
+
+# Redis
+fred = { version = "10", default-features = false, features = [
+    "enable-rustls-ring",
+    "i-keys",
+    "i-scripts",
+] }
+
+# Logging / tracing
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Configuration
+figment = { version = "0.10", features = ["env", "toml"] }
+
+# HTTP / streaming (Phase 2)
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "stream",
+    "http2",
+    "gzip",
+    "charset",
+    "json",
+] }
+http             = "1"
+futures          = "0.3"
+futures-util     = "0.3"
+pin-project-lite = "0.2"
+tokio-util       = { version = "0.7", features = ["rt"] }
+tokio-stream     = "0.1"
+rand             = "0.8"
+smallvec         = { version = "1.13", features = ["serde"] }
+
+# Phase 3: async trait objects + concurrent registry
+async-trait = "0.1"
+dashmap     = "6"
+
+# Phase 4: ONNX embeddings + HuggingFace tokenizer
+ort        = { version = "2.0.0-rc.10", default-features = false, features = ["std", "ndarray", "load-dynamic"] }
+ndarray    = "0.16"
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+
+# Phase 5: HTTP / WebSocket + NATS + JWT
+axum              = { version = "0.8", default-features = false, features = ["ws", "json", "tokio", "http2", "macros"] }
+tower             = { version = "0.5", features = ["util"] }
+tower-http        = { version = "0.6", features = ["trace", "cors"] }
+async-nats        = "0.38"
+jsonwebtoken      = "9"
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
+
+# Phase 6: gRPC plugin protocol
+tonic               = { version = "0.12", default-features = false, features = ["transport", "codegen", "prost", "tls"] }
+prost               = "0.13"
+prost-types         = "0.13"
+tonic-build         = { version = "0.12", default-features = false, features = ["transport", "prost"] }
+protoc-bin-vendored = "3"
+
+# Phase 7: observability, TLS, rate limits, admin
+opentelemetry         = "0.27"
+opentelemetry_sdk     = "0.27"
+opentelemetry-otlp    = "0.27"
+tracing-opentelemetry = "0.28"
+prometheus            = "0.13"
+rustls                = "0.23"
+rustls-pemfile        = "2"
+governor              = "0.7"
+tower-governor        = "0.4"
+notify                = "6"
+
+# Internal crates
+elena-types   = { path = "crates/elena-types" }
+elena-config  = { path = "crates/elena-config" }
+elena-store   = { path = "crates/elena-store" }
+elena-llm     = { path = "crates/elena-llm" }
+elena-tools   = { path = "crates/elena-tools" }
+elena-context = { path = "crates/elena-context" }
+elena-memory  = { path = "crates/elena-memory" }
+elena-router  = { path = "crates/elena-router" }
+elena-core    = { path = "crates/elena-core" }
+elena-gateway = { path = "crates/elena-gateway" }
+elena-worker  = { path = "crates/elena-worker" }
+elena-plugins = { path = "crates/elena-plugins" }
+elena-observability = { path = "crates/elena-observability" }
+elena-auth = { path = "crates/elena-auth" }
+elena-admin = { path = "crates/elena-admin" }
+elena-connector-echo = { path = "bins/elena-connector-echo" }
+
+# Dev-only
+testcontainers         = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
+proptest               = "1"
+insta                  = { version = "1", features = ["json", "yaml"] }
+criterion              = { version = "0.5", features = ["async_tokio"] }
+wiremock               = "0.6"
+
+[profile.release]
+lto           = "thin"
+codegen-units = 1
+opt-level     = 3
+debug         = "line-tables-only"
+strip         = "symbols"
+
+[profile.dev]
+opt-level = 0
+debug     = "full"
+
+[profile.bench]
+lto           = "thin"
+codegen-units = 1
