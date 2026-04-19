@@ -1,0 +1,60 @@
+[package]
+name         = "elena-plugins"
+version      = "0.1.0"
+description  = "Elena plugin protocol: gRPC proto + PluginRegistry + Tool bridge."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+
+# Mirrors workspace lints but downgrades `unsafe_code` from forbid → deny so
+# `build.rs` can locally allow the single `std::env::set_var` call needed to
+# point tonic-build at the vendored protoc on edition 2024.
+[lints.rust]
+unsafe_code                   = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub               = "warn"
+rust_2018_idioms              = { level = "warn", priority = -1 }
+
+[lints.clippy]
+pedantic                = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc      = "allow"
+missing_panics_doc      = "allow"
+must_use_candidate      = "warn"
+unwrap_used             = "deny"
+expect_used             = "deny"
+panic                   = "deny"
+todo                    = "warn"
+dbg_macro               = "deny"
+print_stdout            = "warn"
+print_stderr            = "warn"
+
+[dependencies]
+elena-types = { workspace = true }
+elena-tools = { workspace = true }
+elena-auth  = { workspace = true }
+
+tokio        = { workspace = true }
+tokio-util   = { workspace = true }
+async-trait  = { workspace = true }
+dashmap      = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+futures      = { workspace = true }
+bytes        = { workspace = true }
+prost        = { workspace = true }
+prost-types  = { workspace = true }
+tonic        = { workspace = true }
+http         = { workspace = true }
+
+[build-dependencies]
+tonic-build         = { workspace = true }
+protoc-bin-vendored = { workspace = true }
+
+[dev-dependencies]
+tokio                = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "net"] }
+tokio-stream         = { workspace = true, features = ["net"] }
+elena-connector-echo = { workspace = true }
