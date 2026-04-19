@@ -1,0 +1,14 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "deploy/docker/Dockerfile.all-in-one"
+  },
+  "deploy": {
+    "startCommand": "/usr/local/bin/elena-server",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10,
+    "healthcheckPath": "/admin/v1/health/deep",
+    "healthcheckTimeout": 10
+  }
+}
