@@ -1,0 +1,40 @@
+[package]
+name         = "elena-context"
+version      = "0.1.0"
+description  = "Embedding-based context retrieval, packing, and summarization."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+elena-types  = { workspace = true }
+elena-config = { workspace = true }
+elena-store  = { workspace = true }
+elena-llm    = { workspace = true }
+
+tokio        = { workspace = true }
+tokio-util   = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+async-trait  = { workspace = true }
+futures      = { workspace = true }
+chrono       = { workspace = true }
+
+# Phase 4: ONNX inference + tokenizer
+ort        = { workspace = true }
+ndarray    = { workspace = true }
+tokenizers = { workspace = true }
+
+[dev-dependencies]
+tokio                  = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+testcontainers         = { workspace = true }
+testcontainers-modules = { workspace = true }
+secrecy                = { workspace = true }
+wiremock               = { workspace = true }
+chrono                 = { workspace = true }
