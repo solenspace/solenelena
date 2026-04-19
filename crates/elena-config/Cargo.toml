@@ -1,0 +1,24 @@
+[package]
+name         = "elena-config"
+version      = "0.1.0"
+description  = "Configuration loader for Elena."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+elena-types = { workspace = true }
+
+serde     = { workspace = true }
+thiserror = { workspace = true }
+secrecy   = { workspace = true }
+figment   = { workspace = true }
+tracing   = { workspace = true }
+
+[dev-dependencies]
+figment    = { workspace = true, features = ["test"] }
+serde_json = { workspace = true }
