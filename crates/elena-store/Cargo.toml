@@ -1,0 +1,40 @@
+[package]
+name         = "elena-store"
+version      = "0.1.0"
+description  = "Persistence layer for Elena (Postgres + Redis)."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+elena-types  = { workspace = true }
+elena-config = { workspace = true }
+
+tokio      = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+ulid       = { workspace = true }
+uuid       = { workspace = true }
+chrono     = { workspace = true }
+secrecy    = { workspace = true }
+tracing    = { workspace = true }
+async-trait = { workspace = true }
+
+sqlx       = { workspace = true }
+pgvector   = { workspace = true }
+fred       = { workspace = true }
+
+aes-gcm    = { version = "0.10", features = ["aes"] }
+base64     = "0.22"
+rand       = { workspace = true }
+
+[dev-dependencies]
+tokio                  = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+testcontainers         = { workspace = true }
+testcontainers-modules = { workspace = true }
+proptest               = { workspace = true }
