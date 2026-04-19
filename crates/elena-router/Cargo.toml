@@ -1,0 +1,23 @@
+[package]
+name         = "elena-router"
+version      = "0.1.0"
+description  = "Heuristic model-tier routing with reactive cascade escalation."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+elena-types  = { workspace = true }
+elena-config = { workspace = true }
+elena-tools  = { workspace = true }
+
+serde   = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio      = { workspace = true, features = ["macros", "rt-multi-thread"] }
+serde_json = { workspace = true }
