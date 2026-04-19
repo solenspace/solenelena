@@ -1,0 +1,30 @@
+[package]
+name         = "elena-admin"
+version      = "0.1.0"
+description  = "Operator-facing admin API for Elena. Mounted by the gateway under /admin/v1."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+elena-types = { workspace = true }
+elena-store = { workspace = true }
+
+axum       = { workspace = true, features = ["query"] }
+tower      = { workspace = true }
+tower-http = { workspace = true }
+tokio      = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+tracing    = { workspace = true }
+chrono     = { workspace = true }
+async-nats = { workspace = true }
+uuid       = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
