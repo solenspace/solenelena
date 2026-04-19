@@ -1,0 +1,41 @@
+[package]
+name         = "elena-auth"
+version      = "0.1.0"
+description  = "TLS / mTLS helpers, SecretProvider trait, JWKS rotation for Elena."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Vault HTTP secret provider. Enables `VaultSecretProvider`.
+vault = []
+# AWS KMS-backed envelope crypto for credential vault (Phase 7 tail).
+kms = ["dep:aws-sdk-kms"]
+
+[dependencies]
+tokio       = { workspace = true }
+tokio-util  = { workspace = true }
+async-trait = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+secrecy     = { workspace = true }
+bytes       = { workspace = true }
+reqwest     = { workspace = true }
+http        = { workspace = true }
+jsonwebtoken = { workspace = true }
+rustls         = { workspace = true }
+rustls-pemfile = { workspace = true }
+notify      = { workspace = true }
+
+aws-sdk-kms = { version = "1", optional = true }
+
+[dev-dependencies]
+tokio      = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tempfile   = "3"
