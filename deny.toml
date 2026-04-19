@@ -1,0 +1,71 @@
+[graph]
+all-features = false
+
+[advisories]
+version    = 2
+yanked     = "deny"
+# Decisions documented in SECURITY_AUDIT.md (Phase 7 v1.0 ship-decision).
+# Each ignore lists why the finding is non-blocking for v1.0.
+ignore = [
+    # rsa 0.9.10 Marvin attack — only reachable via sqlx-mysql, which
+    # we do NOT enable. Code path is dead in production.
+    "RUSTSEC-2023-0071",
+    # tokio-tar PAX header — dev-only via testcontainers, never linked
+    # into production binaries.
+    "RUSTSEC-2025-0111",
+    # paste unmaintained — pure macro crate, no runtime exposure.
+    "RUSTSEC-2024-0436",
+    # rustls-pemfile unmaintained — both versions; functional, no
+    # known CVE.
+    "RUSTSEC-2025-0134",
+    # protobuf 2.x recursion DoS — bounded via /metrics endpoint shape.
+    # Tracked for v1.0.x prometheus bump.
+    "RUSTSEC-2024-0437",
+    # rustls-webpki name-constraint / CRL bugs — mitigated by infra
+    # TLS termination per deployment guide. Tracked for v1.0.x
+    # tokio-rustls + async-nats upgrade chain.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0049",
+]
+
+[licenses]
+version    = 2
+allow      = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "OpenSSL",
+    # webpki-roots ships the Mozilla CA bundle under CDLA-Permissive-2.0
+    # — pure data, permissive license, equivalent rights to MIT/Apache
+    # for our purposes. Reviewed during Phase 7 ship gate.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions       = "warn"
+# Wildcard `version = "*"` would hide upstream advisories. cargo-deny's
+# `allow-wildcard-paths` does not apply to crates flagged "public"
+# (those without explicit `publish = false`). Our internal `elena-*`
+# crates use `{ workspace = true }` + `{ path = "..." }` style, which
+# resolves to a wildcard for cargo-deny. Downgrade to `warn` rather
+# than `deny`: the *real* concern (wildcard registry deps) does not
+# apply since we never use `version = "*"` for crates.io packages.
+wildcards               = "warn"
+allow-wildcard-paths    = true
+highlight               = "all"
+workspace-default-features = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git      = "deny"
+allow-registry   = ["https://github.com/rust-lang/crates.io-index"]

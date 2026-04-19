@@ -1,0 +1,26 @@
+# cargo-audit ignore list — must mirror deny.toml's [advisories.ignore]
+# section. Decisions documented in SECURITY_AUDIT.md.
+
+[advisories]
+ignore = [
+    # rsa 0.9.10 Marvin attack — only reachable via sqlx-mysql which we
+    # do NOT enable. Dead code path in our Postgres-only deployment.
+    "RUSTSEC-2023-0071",
+    # tokio-tar PAX header — dev-only via testcontainers, never linked
+    # into production binaries.
+    "RUSTSEC-2025-0111",
+    # paste unmaintained — pure macro crate, no runtime exposure.
+    "RUSTSEC-2024-0436",
+    # rustls-pemfile unmaintained — both versions; functional, no
+    # known CVE.
+    "RUSTSEC-2025-0134",
+    # protobuf 2.x recursion DoS — bounded via /metrics endpoint shape.
+    # Tracked for v1.0.x prometheus bump.
+    "RUSTSEC-2024-0437",
+    # rustls-webpki name-constraint / CRL bugs — mitigated by infra TLS
+    # termination per deployment guide. Tracked for v1.0.x
+    # tokio-rustls + async-nats upgrade chain.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0049",
+]
