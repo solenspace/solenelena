@@ -1,0 +1,27 @@
+# Build artifacts
+/target/
+
+# Environment
+.env
+.env.local
+.env.test
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Coverage
+/coverage/
+tarpaulin-report.html
+cobertura.xml
+
+# Criterion benchmark output
+/criterion/
