@@ -54,10 +54,10 @@ fn resolve_token(
     metadata: &tonic::metadata::MetadataMap,
     env_default: &SecretString,
 ) -> SecretString {
-    metadata.get(CRED_HEADER).and_then(|v| v.to_str().ok()).map_or_else(
-        || env_default.clone(),
-        |s| SecretString::from(s.to_owned()),
-    )
+    metadata
+        .get(CRED_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map_or_else(|| env_default.clone(), |s| SecretString::from(s.to_owned()))
 }
 
 /// gRPC service implementing Sheets actions.
