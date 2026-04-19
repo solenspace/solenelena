@@ -1,0 +1,25 @@
+[package]
+name         = "elena-phase2-smoke"
+version      = "0.1.0"
+description  = "End-to-end smoke test proving Phase 2 (elena-llm) streams from Anthropic."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+publish      = false
+
+[lints]
+workspace = true
+
+[dependencies]
+elena-types  = { workspace = true }
+elena-config = { workspace = true }
+elena-llm    = { workspace = true }
+
+tokio              = { workspace = true }
+tokio-util         = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow             = { workspace = true }
+secrecy            = { workspace = true }
+futures            = { workspace = true }
+chrono             = { workspace = true }
