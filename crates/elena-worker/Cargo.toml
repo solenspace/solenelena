@@ -1,0 +1,42 @@
+[package]
+name         = "elena-worker"
+version      = "0.1.0"
+description  = "NATS JetStream consumer running Elena's agentic loop."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "elena-worker"
+path = "src/main.rs"
+
+[dependencies]
+elena-types   = { workspace = true }
+elena-config  = { workspace = true }
+elena-store   = { workspace = true }
+elena-core    = { workspace = true }
+
+tokio              = { workspace = true }
+tokio-util         = { workspace = true }
+tokio-stream       = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+secrecy            = { workspace = true }
+futures            = { workspace = true }
+anyhow             = { workspace = true }
+uuid               = { workspace = true }
+
+async-nats = { workspace = true }
+
+[dev-dependencies]
+tokio                  = { workspace = true, features = ["macros", "rt-multi-thread"] }
+testcontainers         = { workspace = true }
+testcontainers-modules = { workspace = true }
+wiremock               = { workspace = true }
