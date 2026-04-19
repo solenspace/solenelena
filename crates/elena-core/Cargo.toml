@@ -1,0 +1,45 @@
+[package]
+name         = "elena-core"
+version      = "0.1.0"
+description  = "Agentic loop state machine for Elena."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+elena-types   = { workspace = true }
+elena-config  = { workspace = true }
+elena-store   = { workspace = true }
+elena-llm     = { workspace = true }
+elena-tools   = { workspace = true }
+elena-context = { workspace = true }
+elena-memory  = { workspace = true }
+elena-router  = { workspace = true }
+elena-plugins = { workspace = true }
+elena-observability = { workspace = true }
+
+tokio        = { workspace = true }
+tokio-util   = { workspace = true }
+tokio-stream = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+chrono       = { workspace = true }
+tracing      = { workspace = true }
+futures      = { workspace = true }
+async-trait  = { workspace = true }
+
+[dev-dependencies]
+tokio      = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+wiremock   = { workspace = true }
+anyhow     = { workspace = true }
+futures    = { workspace = true }
+serde_json = { workspace = true }
+testcontainers         = { workspace = true }
+testcontainers-modules = { workspace = true }
+secrecy                = { workspace = true }
+elena-observability    = { workspace = true }
