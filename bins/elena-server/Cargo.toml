@@ -1,0 +1,39 @@
+[package]
+name         = "elena-server"
+version      = "0.1.0"
+description  = "Unified Elena server — runs gateway + worker in one process. Suitable for single-service deploy targets like Railway."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+publish      = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "elena-server"
+path = "src/main.rs"
+
+[dependencies]
+elena-types         = { workspace = true }
+elena-config        = { workspace = true }
+elena-store         = { workspace = true }
+elena-llm           = { workspace = true }
+elena-tools         = { workspace = true }
+elena-context       = { workspace = true }
+elena-memory        = { workspace = true }
+elena-router        = { workspace = true }
+elena-core          = { workspace = true }
+elena-gateway       = { workspace = true }
+elena-worker        = { workspace = true }
+elena-plugins       = { workspace = true }
+elena-observability = { workspace = true }
+elena-auth          = { workspace = true }
+
+tokio              = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tokio-util         = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow             = { workspace = true }
+secrecy            = { workspace = true }
+axum               = { workspace = true }
