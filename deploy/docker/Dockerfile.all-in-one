@@ -1,0 +1,55 @@
+# Elena unified server image — runs gateway + worker in one process.
+#
+# Suitable for one-container deploy targets (Railway, Fly, single-VM
+# docker run, local docker-compose). For multi-replica production on
+# Kubernetes, prefer the per-service Dockerfiles + the Helm chart in
+# `deploy/helm/elena` so gateway and worker scale independently.
+#
+# Build:
+#   docker build -f deploy/docker/Dockerfile.all-in-one -t elena:latest .
+#
+# Run (smoke):
+#   docker run --rm \
+#     -e DATABASE_URL=postgres://... \
+#     -e REDIS_URL=redis://... \
+#     -e NATS_URL=nats://... \
+#     -e ELENA_NATS_URL=nats://... \
+#     -e JWT_HS256_SECRET=... \
+#     -e ELENA_CREDENTIAL_MASTER_KEY=$(openssl rand -base64 32) \
+#     -p 8080:8080 elena:latest
+
+ARG RUST_VERSION=1.85
+ARG DEBIAN_VERSION=bookworm
+ARG DISTROLESS=gcr.io/distroless/cc-debian12:nonroot
+
+# ---------- builder ----------
+FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS builder
+
+WORKDIR /src
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends protobuf-compiler ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Copy manifests + source. Cargo's incremental cache keeps reasonable
+# rebuild speed even without layer-tricks; we keep the Dockerfile
+# straightforward.
+COPY Cargo.toml Cargo.lock rustfmt.toml ./
+COPY crates ./crates
+COPY bins ./bins
+
+RUN cargo build --release --bin elena-server
+
+# ---------- runtime ----------
+FROM ${DISTROLESS} AS runtime
+
+# Bring the binary + the migrations directory the boot path needs to
+# apply at startup.
+COPY --from=builder /src/target/release/elena-server /usr/local/bin/elena-server
+COPY --from=builder /src/crates/elena-store/migrations /opt/elena/migrations
+
+ENV ELENA_LISTEN_ADDR=0.0.0.0:8080 \
+    RUST_LOG=info,elena_gateway=info,elena_worker=info
+
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/elena-server"]
