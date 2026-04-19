@@ -1,0 +1,25 @@
+[package]
+name         = "elena-types"
+version      = "0.1.0"
+description  = "Foundation types for Elena: IDs, messages, content blocks, errors, usage, permissions."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+ulid       = { workspace = true }
+uuid       = { workspace = true }
+chrono     = { workspace = true }
+bytes      = { workspace = true }
+
+[dev-dependencies]
+proptest   = { workspace = true }
+insta      = { workspace = true }
+serde_json = { workspace = true }
