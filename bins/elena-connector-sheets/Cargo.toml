@@ -1,0 +1,42 @@
+[package]
+name         = "elena-connector-sheets"
+version      = "0.1.0"
+description  = "Elena plugin sidecar for Google Sheets — read + append via the v4 REST API."
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+publish      = false
+
+[lints]
+workspace = true
+
+[lib]
+name = "elena_connector_sheets"
+path = "src/lib.rs"
+
+[[bin]]
+name = "elena-connector-sheets"
+path = "src/main.rs"
+
+[dependencies]
+elena-plugins = { workspace = true }
+
+tokio              = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+tokio-stream       = { workspace = true, features = ["net"] }
+tonic              = { workspace = true }
+prost              = { workspace = true }
+prost-types        = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait        = { workspace = true }
+anyhow             = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+futures            = { workspace = true }
+reqwest            = { workspace = true }
+secrecy            = { workspace = true }
+thiserror          = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }
+tokio    = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
