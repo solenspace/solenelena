@@ -1,0 +1,78 @@
+// Elena plugin protocol v1.
+//
+// Plugins are out-of-process gRPC sidecars. Elena workers connect to each
+// plugin at boot, call GetManifest to learn the plugin's id + actions, and
+// register one synthetic Tool per action into the ToolRegistry. At runtime,
+// when the LLM issues a tool-use for a plugin action, Elena sends a
+// PluginRequest via Execute and streams the responses back to the client.
+
+syntax = "proto3";
+
+package elena.plugin.v1;
+
+import "google/protobuf/empty.proto";
+
+service ElenaPlugin {
+    // Return this plugin's identity and action catalog. Called once at
+    // registration; the manifest is cached for the process's lifetime.
+    rpc GetManifest(google.protobuf.Empty) returns (PluginManifest);
+
+    // Execute one action. The stream returns zero or more ProgressUpdate
+    // payloads followed by exactly one FinalResult. The server SHOULD close
+    // the stream after the FinalResult.
+    rpc Execute(PluginRequest) returns (stream PluginResponse);
+
+    // Liveness probe. Used both by a background HealthMonitor inside Elena
+    // and by Kubernetes / the operator.
+    rpc Health(google.protobuf.Empty) returns (HealthResponse);
+}
+
+message PluginManifest {
+    string id = 1;                              // e.g. "echo", "shopify"
+    string name = 2;                            // Human-readable
+    string version = 3;                         // Plugin version
+    repeated ActionDefinition actions = 4;
+    repeated string required_credentials = 5;   // Informational; creds injected by sidecar env
+}
+
+message ActionDefinition {
+    string name = 1;                             // e.g. "reverse", "get_orders"
+    string description = 2;                      // Used by the LLM as the tool description
+    string input_schema = 3;                     // JSON-Schema (string) for Execute.input_json
+    string output_schema = 4;                    // JSON-Schema (string) for FinalResult.output_json
+    bool   is_read_only = 5;                     // If true, Elena runs the tool in the concurrent batch
+}
+
+message PluginRequest {
+    string action = 1;                           // Must match an ActionDefinition.name
+    bytes  input_json = 2;                       // Caller-provided JSON per input_schema
+    string tool_call_id = 3;                     // The LLM's tool_call_id; echoed in progress events
+    RequestContext context = 4;                  // Identity for the sidecar to log / audit against
+}
+
+message RequestContext {
+    string tenant_id = 1;
+    string thread_id = 2;
+}
+
+message PluginResponse {
+    oneof payload {
+        ProgressUpdate progress = 1;
+        FinalResult    result = 2;
+    }
+}
+
+message ProgressUpdate {
+    string message = 1;                          // Human-readable update; surfaces as StreamEvent::ToolProgress.message
+    bytes  data_json = 2;                        // Optional structured blob; surfaces as StreamEvent::ToolProgress.data
+}
+
+message FinalResult {
+    bytes output_json = 1;                       // JSON per ActionDefinition.output_schema
+    bool  is_error = 2;                          // If true, Elena records the ToolResult as an error
+}
+
+message HealthResponse {
+    bool   ok = 1;
+    string detail = 2;                           // Free-form status string (optional)
+}
