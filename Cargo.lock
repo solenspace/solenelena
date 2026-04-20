@@ -1319,6 +1319,7 @@ dependencies = [
  "async-nats",
  "axum 0.8.9",
  "chrono",
+ "elena-plugins",
  "elena-store",
  "elena-types",
  "http 1.4.0",
@@ -1538,6 +1539,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "elena-embedded-plugins"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "elena-connector-echo",
+ "elena-connector-notion",
+ "elena-connector-sheets",
+ "elena-connector-shopify",
+ "elena-connector-slack",
+ "elena-plugins",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
 name = "elena-gateway"
 version = "0.1.0"
 dependencies = [
@@ -1548,6 +1566,7 @@ dependencies = [
  "elena-admin",
  "elena-config",
  "elena-observability",
+ "elena-plugins",
  "elena-store",
  "elena-types",
  "futures",
@@ -1933,6 +1952,7 @@ dependencies = [
  "elena-config",
  "elena-context",
  "elena-core",
+ "elena-embedded-plugins",
  "elena-gateway",
  "elena-llm",
  "elena-memory",

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use elena_plugins::PluginRegistry;
 use elena_store::Store;
 use secrecy::SecretString;
 
@@ -21,6 +22,11 @@ pub struct AdminState {
     /// auth setup); production deployments must set this from
     /// `ELENA_ADMIN_TOKEN`.
     pub admin_token: Option<SecretString>,
+    /// In-memory plugin registry. Backs `GET /admin/v1/plugins` so
+    /// operators (and our BFF) can confirm which sidecars actually
+    /// answered `GetManifest()` at boot. `None` for tests + smokes
+    /// that don't construct a registry.
+    pub plugins: Option<Arc<PluginRegistry>>,
 }
 
 impl std::fmt::Debug for AdminState {
@@ -28,6 +34,7 @@ impl std::fmt::Debug for AdminState {
         f.debug_struct("AdminState")
             .field("nats_connected", &self.nats.is_some())
             .field("admin_token_set", &self.admin_token.is_some())
+            .field("plugins_attached", &self.plugins.is_some())
             .finish()
     }
 }
@@ -35,7 +42,7 @@ impl std::fmt::Debug for AdminState {
 impl AdminState {
     /// Build with no admin token configured (tests, smokes).
     pub fn new(store: Arc<Store>, nats: Option<async_nats::Client>) -> Self {
-        Self { store, nats, admin_token: None }
+        Self { store, nats, admin_token: None, plugins: None }
     }
 
     /// Attach the production admin token. Once set every admin call
@@ -43,6 +50,16 @@ impl AdminState {
     #[must_use]
     pub fn with_admin_token(mut self, token: SecretString) -> Self {
         self.admin_token = Some(token);
+        self
+    }
+
+    /// Attach the live plugin registry so `GET /admin/v1/plugins` can
+    /// report registered manifests. The gateway boot path passes the
+    /// same `Arc<PluginRegistry>` it hands to the worker, so the admin
+    /// view stays in lock-step with what the LLM actually sees.
+    #[must_use]
+    pub fn with_plugins(mut self, plugins: Arc<PluginRegistry>) -> Self {
+        self.plugins = Some(plugins);
         self
     }
 }

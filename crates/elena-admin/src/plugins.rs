@@ -12,8 +12,9 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use elena_plugins::PluginManifest;
 use elena_types::TenantId;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::state::AdminState;
 
@@ -40,4 +41,54 @@ pub async fn set_owners(
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
+}
+
+/// One row in the response from `GET /admin/v1/plugins`.
+#[derive(Debug, Serialize)]
+pub struct RegisteredPluginView {
+    /// Plugin id (e.g. `"slack"`).
+    pub plugin_id: String,
+    /// Free-form name from the manifest.
+    pub name: String,
+    /// Plugin version string.
+    pub version: String,
+    /// Action names exposed by this plugin (just the names, not the
+    /// schemas — the LLM-facing schemas are large and not useful here).
+    pub actions: Vec<String>,
+    /// Number of actions advertised by the manifest. Convenient for
+    /// dashboards that don't want to count.
+    pub action_count: usize,
+}
+
+impl From<PluginManifest> for RegisteredPluginView {
+    fn from(m: PluginManifest) -> Self {
+        let actions: Vec<String> = m.actions.iter().map(|a| a.name.clone()).collect();
+        let action_count = actions.len();
+        Self {
+            plugin_id: m.id.into_inner(),
+            name: m.name,
+            version: m.version,
+            actions,
+            action_count,
+        }
+    }
+}
+
+/// `GET /admin/v1/plugins` — list every plugin whose sidecar answered
+/// `GetManifest()` at gateway boot. The BFF uses this to detect "Slack
+/// configured but plugin not loaded" and to surface a banner instead of
+/// letting the LLM hallucinate when the tool schema is empty.
+///
+/// Returns 503 if the registry was never attached (test / smoke build).
+pub async fn list_registered(State(state): State<AdminState>) -> impl IntoResponse {
+    let Some(plugins) = state.plugins else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "plugin registry not attached to AdminState",
+        )
+            .into_response();
+    };
+    let view: Vec<RegisteredPluginView> =
+        plugins.manifests().into_iter().map(RegisteredPluginView::from).collect();
+    (StatusCode::OK, Json(view)).into_response()
 }

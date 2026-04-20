@@ -26,9 +26,10 @@ elena-router        = { workspace = true }
 elena-core          = { workspace = true }
 elena-gateway       = { workspace = true }
 elena-worker        = { workspace = true }
-elena-plugins       = { workspace = true }
-elena-observability = { workspace = true }
-elena-auth          = { workspace = true }
+elena-plugins          = { workspace = true }
+elena-embedded-plugins = { workspace = true }
+elena-observability    = { workspace = true }
+elena-auth             = { workspace = true }
 
 tokio              = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util         = { workspace = true }

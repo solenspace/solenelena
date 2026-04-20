@@ -16,6 +16,7 @@ members = [
     "crates/elena-observability",
     "crates/elena-auth",
     "crates/elena-admin",
+    "crates/elena-embedded-plugins",
     "bins/elena-phase1-smoke",
     "bins/elena-phase2-smoke",
     "bins/elena-phase3-smoke",
@@ -187,7 +188,12 @@ elena-plugins = { path = "crates/elena-plugins" }
 elena-observability = { path = "crates/elena-observability" }
 elena-auth = { path = "crates/elena-auth" }
 elena-admin = { path = "crates/elena-admin" }
-elena-connector-echo = { path = "bins/elena-connector-echo" }
+elena-connector-echo    = { path = "bins/elena-connector-echo" }
+elena-connector-slack   = { path = "bins/elena-connector-slack" }
+elena-connector-notion  = { path = "bins/elena-connector-notion" }
+elena-connector-sheets  = { path = "bins/elena-connector-sheets" }
+elena-connector-shopify = { path = "bins/elena-connector-shopify" }
+elena-embedded-plugins  = { path = "crates/elena-embedded-plugins" }
 
 # Dev-only
 testcontainers         = "0.23"

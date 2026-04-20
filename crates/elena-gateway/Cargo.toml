@@ -19,6 +19,7 @@ elena-types         = { workspace = true }
 elena-config        = { workspace = true }
 elena-store         = { workspace = true }
 elena-observability = { workspace = true }
+elena-plugins       = { workspace = true }
 elena-admin         = { workspace = true }
 
 tokio              = { workspace = true }

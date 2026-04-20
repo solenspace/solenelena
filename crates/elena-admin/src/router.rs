@@ -32,6 +32,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/workspaces/{id}", get(workspaces::get_workspace))
         .route("/workspaces/{id}/instructions", patch(workspaces::update_instructions))
         .route("/workspaces/{id}/allowed-plugins", patch(workspaces::update_allowed_plugins))
+        .route("/plugins", get(plugins::list_registered))
         .route("/plugins/{plugin_id}/owners", put(plugins::set_owners))
         .route("/health/deep", get(health::deep_health))
         .route_layer(middleware::from_fn_with_state(token_for_middleware, require_admin_token))

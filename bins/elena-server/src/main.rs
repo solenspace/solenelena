@@ -73,7 +73,10 @@ async fn main() -> anyhow::Result<()> {
     let llm: Arc<dyn LlmClient> = Arc::new(mux);
 
     let tools = ToolRegistry::new();
-    let plugins_endpoints = std::env::var("ELENA_PLUGIN_ENDPOINTS")
+    // External gRPC sidecar endpoints — comma-separated URLs in
+    // `ELENA_PLUGIN_ENDPOINTS`. Used when a plugin is heavy enough to
+    // warrant its own service.
+    let mut plugins_endpoints = std::env::var("ELENA_PLUGIN_ENDPOINTS")
         .ok()
         .map(|csv| {
             csv.split(',')
@@ -83,6 +86,16 @@ async fn main() -> anyhow::Result<()> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    // In-process embedded sidecars — comma-separated plugin ids in
+    // `ELENA_EMBEDDED_PLUGINS`. Each id spawns a tonic server on a
+    // loopback port; the URL is appended to the endpoints list so the
+    // gateway dials it the same way as an external one. Lets a single
+    // Railway service host dozens of thin REST-wrapper plugins without
+    // a per-plugin Dockerfile or service.
+    let embedded_enabled = elena_embedded_plugins::enabled_from_env();
+    let embedded_urls = elena_embedded_plugins::spawn_embedded(&embedded_enabled).await?;
+    plugins_endpoints.extend(embedded_urls);
+
     let plugins_cfg = PluginsConfig { endpoints: plugins_endpoints, ..PluginsConfig::default() };
     let plugins = Arc::new(PluginRegistry::with_config(tools.clone(), &plugins_cfg));
     if !plugins_cfg.endpoints.is_empty() {
@@ -142,6 +155,11 @@ async fn main() -> anyhow::Result<()> {
     };
     let mut gateway_state =
         GatewayState::connect(&gateway_cfg, store.clone(), Arc::clone(&metrics)).await?;
+    // Hand the live registry to the admin router so `GET /admin/v1/plugins`
+    // reflects what was actually registered at boot — this is what the
+    // BFF reads to detect "Slack configured but plugin not loaded" and
+    // surface a banner instead of letting the LLM hallucinate.
+    gateway_state = gateway_state.with_plugins(Arc::clone(&plugins));
     // Optional but recommended: lock /admin/v1/* behind a shared
     // secret. Production deployments must set this; absence is
     // logged so the operator notices.
