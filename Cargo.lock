@@ -1948,6 +1948,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "elena-slack-smoke"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "axum 0.8.9",
+ "chrono",
+ "elena-auth",
+ "elena-config",
+ "elena-connector-slack",
+ "elena-context",
+ "elena-core",
+ "elena-gateway",
+ "elena-llm",
+ "elena-memory",
+ "elena-observability",
+ "elena-plugins",
+ "elena-router",
+ "elena-store",
+ "elena-tools",
+ "elena-types",
+ "elena-worker",
+ "futures",
+ "jsonwebtoken",
+ "reqwest",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "testcontainers",
+ "testcontainers-modules",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite 0.24.0",
+ "tokio-util",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "elena-solen-smoke"
 version = "1.0.0"
 dependencies = [

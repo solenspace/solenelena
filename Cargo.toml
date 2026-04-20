@@ -30,6 +30,7 @@ members = [
     "bins/elena-connector-shopify",
     "bins/elena-hannlys-smoke",
     "bins/elena-server",
+    "bins/elena-slack-smoke",
     "bins/elena-solen-smoke",
 ]
 
