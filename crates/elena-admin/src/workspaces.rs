@@ -128,6 +128,12 @@ pub async fn get_workspace(
         )
             .into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, format!("workspace {id} not found")).into_response(),
+        Err(elena_types::StoreError::TenantMismatch { .. }) => {
+            // Caller asked for a workspace under a tenant that doesn't
+            // own it. Surface as 404 (not 500) so the admin endpoint
+            // doesn't leak which workspaces exist under other tenants.
+            (StatusCode::NOT_FOUND, format!("workspace {id} not found")).into_response()
+        }
         Err(e) => {
             tracing::error!(?e, "get_workspace failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
