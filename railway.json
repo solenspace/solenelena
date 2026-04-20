@@ -8,7 +8,7 @@
     "startCommand": "/usr/local/bin/elena-server",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10,
-    "healthcheckPath": "/admin/v1/health/deep",
-    "healthcheckTimeout": 10
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 30
   }
 }
