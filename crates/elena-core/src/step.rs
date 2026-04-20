@@ -17,8 +17,9 @@ use elena_router::{CascadeDecision, CascadeInputs, RoutingContext};
 use elena_tools::{ExecuteBatchOptions, ToolInvocation, execute_batch};
 use elena_types::{
     ApprovalDecision, ApprovalVerdict, ContentBlock, ElenaError, Message, MessageId, MessageKind,
-    PendingApproval, Role, StreamEvent, Terminal, ToolResultContent,
+    PendingApproval, Role, StreamEvent, Terminal, ToolCallId, ToolResultContent,
 };
+use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -604,6 +605,10 @@ fn to_elena_error(err: &elena_context::ContextError) -> ElenaError {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "SCRUM-103 added an idempotency guard + early-exit path; splitting the helper off would fragment a straight-line transition"
+)]
 async fn handle_executing_tools(
     state: &mut LoopState,
     deps: &LoopDeps,
@@ -611,6 +616,48 @@ async fn handle_executing_tools(
     event_tx: &mpsc::Sender<StreamEvent>,
     remaining: Vec<elena_tools::ToolInvocation>,
 ) -> Result<StepOutcome, ElenaError> {
+    // Idempotency guard. The LLM can re-propose the same `tool_use_id`
+    // after seeing its own `tool_result` — llama-3.3's tool-use
+    // protocol handling is not always clean. Without this filter we
+    // would execute the same Slack post twice (and rack up duplicate
+    // side-effects on every integration).
+    //
+    // Two passes:
+    //   1. Skip any call whose id already has a persisted tool_result
+    //      row on this thread (exact idempotency).
+    //   2. Skip any call whose (tool_name, canonical_input) matches a
+    //      prior *successful* tool result on this thread. This catches
+    //      the moderate-mode loop where the LLM re-proposes the same
+    //      logical action under a fresh `tool_use_id` after approval.
+    let thread_exec =
+        prior_tool_execution_index(deps, state.tenant.tenant_id, state.thread_id).await?;
+    let (dupes, fresh): (Vec<_>, Vec<_>) = remaining.into_iter().partition(|c| {
+        if thread_exec.ids.contains(&c.id) {
+            return true;
+        }
+        let fp = tool_call_fingerprint(&c.name, &c.input);
+        thread_exec.succeeded_fingerprints.contains(&fp)
+    });
+    for dup in &dupes {
+        warn!(
+            tool_call_id = %dup.id,
+            tool_name = %dup.name,
+            "skipping duplicate tool invocation — result already persisted for same id or (name,input)",
+        );
+    }
+    if fresh.is_empty() {
+        // Every call was a dupe. Don't re-enter the LLM loop immediately
+        // either — if we went back to Streaming we would likely receive
+        // the same proposal again. Transition to PostProcessing with
+        // `last_turn_had_tools = true` so the LLM gets one more chance
+        // to emit a final text given it has already seen the results.
+        state.pending_tool_calls.clear();
+        state.phase = LoopPhase::PostProcessing;
+        emit_phase_change(event_tx, "executing_tools", "post_processing").await;
+        return Ok(StepOutcome::Continue);
+    }
+    let remaining = fresh;
+
     // Parent ID threads tool-result rows off the assistant that requested them.
     let parent_id = latest_assistant_message_id(deps, state).await?;
 
@@ -767,6 +814,81 @@ async fn latest_assistant_message_id(
     let msgs =
         deps.store.threads.list_messages(state.tenant.tenant_id, state.thread_id, 50, None).await?;
     Ok(msgs.iter().rev().find(|m| matches!(m.kind, MessageKind::Assistant { .. })).map(|m| m.id))
+}
+
+/// Snapshot of tool-call state for idempotency checks.
+struct PriorToolExecIndex {
+    /// Every `tool_use_id` that already has a `ToolResult` content block.
+    ids: HashSet<ToolCallId>,
+    /// `tool_name + canonical_input` fingerprints for *successful* prior
+    /// results. Lets us detect the "LLM re-proposes the same logical
+    /// action under a new id" case, which is how the moderate-mode
+    /// approval loop manifests.
+    succeeded_fingerprints: HashSet<String>,
+}
+
+/// Build [`PriorToolExecIndex`] by walking the thread: assistant messages
+/// carry the `tool_use` blocks that produced a given call, tool-result
+/// rows carry the `is_error` flag per id. We cross-reference the two to
+/// fingerprint only the successful calls.
+async fn prior_tool_execution_index(
+    deps: &LoopDeps,
+    tenant_id: elena_types::TenantId,
+    thread_id: elena_types::ThreadId,
+) -> Result<PriorToolExecIndex, ElenaError> {
+    let msgs = deps.store.threads.list_messages(tenant_id, thread_id, 1_000, None).await?;
+    let mut ids: HashSet<ToolCallId> = HashSet::new();
+    let mut succeeded_ids: HashSet<ToolCallId> = HashSet::new();
+    let mut tool_use_by_id: std::collections::HashMap<ToolCallId, (String, serde_json::Value)> =
+        std::collections::HashMap::new();
+    for m in &msgs {
+        for b in &m.content {
+            match b {
+                ContentBlock::ToolUse { id, name, input, .. } => {
+                    tool_use_by_id.insert(*id, (name.clone(), input.clone()));
+                }
+                ContentBlock::ToolResult { tool_use_id, is_error, .. } => {
+                    ids.insert(*tool_use_id);
+                    if !is_error {
+                        succeeded_ids.insert(*tool_use_id);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let succeeded_fingerprints: HashSet<String> = succeeded_ids
+        .iter()
+        .filter_map(|id| tool_use_by_id.get(id).map(|(name, input)| tool_call_fingerprint(name, input)))
+        .collect();
+    Ok(PriorToolExecIndex { ids, succeeded_fingerprints })
+}
+
+/// Stable fingerprint for "same tool + same input". Produces the same
+/// string for `{a:1,b:2}` and `{b:2,a:1}` by sorting object keys
+/// recursively.
+fn tool_call_fingerprint(name: &str, input: &serde_json::Value) -> String {
+    format!("{name}:{}", canonicalize(input))
+}
+
+fn canonicalize(v: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match v {
+        Value::Object(map) => {
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            let body: Vec<String> = entries
+                .into_iter()
+                .map(|(k, v)| format!("{}:{}", serde_json::to_string(k).unwrap_or_default(), canonicalize(v)))
+                .collect();
+            format!("{{{}}}", body.join(","))
+        }
+        Value::Array(arr) => {
+            let body: Vec<String> = arr.iter().map(canonicalize).collect();
+            format!("[{}]", body.join(","))
+        }
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
 }
 
 async fn emit_phase_change(tx: &mpsc::Sender<StreamEvent>, from: &str, to: &str) {
@@ -1120,5 +1242,51 @@ mod approval_tests {
         // brief-valued inline.
         assert!(summary.starts_with("plugin.deep_action("));
         assert!(summary.contains("outer="));
+    }
+
+    #[test]
+    fn fingerprint_normalizes_object_key_order() {
+        let a = tool_call_fingerprint(
+            "slack_post_message",
+            &serde_json::json!({"channel": "#x", "text": "hi"}),
+        );
+        let b = tool_call_fingerprint(
+            "slack_post_message",
+            &serde_json::json!({"text": "hi", "channel": "#x"}),
+        );
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn fingerprint_distinguishes_different_inputs() {
+        let a = tool_call_fingerprint(
+            "slack_post_message",
+            &serde_json::json!({"channel": "#x", "text": "hi"}),
+        );
+        let b = tool_call_fingerprint(
+            "slack_post_message",
+            &serde_json::json!({"channel": "#x", "text": "bye"}),
+        );
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn fingerprint_distinguishes_different_tool_names() {
+        let a = tool_call_fingerprint("slack_post_message", &serde_json::json!({}));
+        let b = tool_call_fingerprint("slack_list_channels", &serde_json::json!({}));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn fingerprint_handles_nested_objects_and_arrays() {
+        let a = tool_call_fingerprint(
+            "x",
+            &serde_json::json!({"a": [1, 2, {"k": "v", "j": 3}], "z": true}),
+        );
+        let b = tool_call_fingerprint(
+            "x",
+            &serde_json::json!({"z": true, "a": [1, 2, {"j": 3, "k": "v"}]}),
+        );
+        assert_eq!(a, b);
     }
 }
