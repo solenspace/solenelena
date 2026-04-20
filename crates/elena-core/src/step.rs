@@ -646,12 +646,18 @@ async fn handle_executing_tools(
         );
     }
     if fresh.is_empty() {
-        // Every call was a dupe. Don't re-enter the LLM loop immediately
-        // either — if we went back to Streaming we would likely receive
-        // the same proposal again. Transition to PostProcessing with
-        // `last_turn_had_tools = true` so the LLM gets one more chance
-        // to emit a final text given it has already seen the results.
+        // Every call in this batch was a dupe. Force loop termination —
+        // *not* a re-entry into Streaming. If we set
+        // `last_turn_had_tools = true`, PostProcessing would loop back
+        // to Streaming, the LLM would propose the same tool again, the
+        // guard would block it again, and we'd cycle until max_turns.
+        // Setting `last_turn_had_tools = false` instead routes
+        // PostProcessing straight to `Terminal::Completed`. The user
+        // sees the original `tool_use_start` + `tool_result` + `done` —
+        // the UI's tool pill carries the success story without a
+        // contradictory text response from the LLM.
         state.pending_tool_calls.clear();
+        state.last_turn_had_tools = false;
         state.phase = LoopPhase::PostProcessing;
         emit_phase_change(event_tx, "executing_tools", "post_processing").await;
         return Ok(StepOutcome::Continue);
