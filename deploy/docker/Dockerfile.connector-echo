@@ -1,7 +1,7 @@
 # Reference connector sidecar. Ships alongside the gateway / worker
 # images as an example operators can copy to build their own.
 
-ARG RUST_VERSION=1.85
+ARG RUST_VERSION=1.90
 ARG DEBIAN_VERSION=bookworm
 ARG DISTROLESS=gcr.io/distroless/cc-debian12:nonroot
 
