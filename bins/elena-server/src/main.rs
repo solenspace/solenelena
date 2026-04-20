@@ -137,8 +137,23 @@ async fn main() -> anyhow::Result<()> {
             leeway_seconds: 60,
         },
     };
-    let gateway_state =
+    let mut gateway_state =
         GatewayState::connect(&gateway_cfg, store.clone(), Arc::clone(&metrics)).await?;
+    // Optional but recommended: lock /admin/v1/* behind a shared
+    // secret. Production deployments must set this; absence is
+    // logged so the operator notices.
+    match std::env::var("ELENA_ADMIN_TOKEN") {
+        Ok(token) if !token.is_empty() => {
+            gateway_state = gateway_state.with_admin_token(SecretString::from(token));
+            info!("admin API gated by X-Elena-Admin-Token header");
+        }
+        _ => {
+            warn!(
+                "ELENA_ADMIN_TOKEN is not set — /admin/v1/* is exposed without auth. \
+                 Set it in production."
+            );
+        }
+    }
     let app = build_router(gateway_state);
 
     let cancel = CancellationToken::new();

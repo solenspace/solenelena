@@ -25,6 +25,10 @@ tracing    = { workspace = true }
 chrono     = { workspace = true }
 async-nats = { workspace = true }
 uuid       = { workspace = true }
+secrecy    = { workspace = true }
+subtle     = "2"
+http       = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tower = { workspace = true, features = ["util"] }

@@ -28,6 +28,7 @@
 )]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod auth;
 pub mod health;
 pub mod plugins;
 pub mod router;

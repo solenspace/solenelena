@@ -18,7 +18,7 @@
 #     -e ELENA_CREDENTIAL_MASTER_KEY=$(openssl rand -base64 32) \
 #     -p 8080:8080 elena:latest
 
-ARG RUST_VERSION=1.85
+ARG RUST_VERSION=1.90
 ARG DEBIAN_VERSION=bookworm
 ARG DISTROLESS=gcr.io/distroless/cc-debian12:nonroot
 

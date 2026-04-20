@@ -7,6 +7,7 @@ use axum::extract::FromRef;
 use axum::routing::{get, post};
 use elena_observability::LoopMetrics;
 use elena_store::Store;
+use secrecy::SecretString;
 
 use crate::auth::JwtValidator;
 use crate::config::GatewayConfig;
@@ -29,6 +30,10 @@ pub struct GatewayState {
     /// Process-wide metrics handles. Shared with the worker via
     /// `LoopDeps.metrics` so `/metrics` renders one consolidated surface.
     pub metrics: Arc<LoopMetrics>,
+    /// Optional shared secret enforced as `X-Elena-Admin-Token` on
+    /// every `/admin/v1/*` call. `None` disables the check (tests +
+    /// smokes); production sets it from `ELENA_ADMIN_TOKEN`.
+    pub admin_token: Option<SecretString>,
 }
 
 impl std::fmt::Debug for GatewayState {
@@ -47,7 +52,16 @@ impl GatewayState {
     ) -> Result<Self, GatewayError> {
         let jwt = JwtValidator::from_config(&cfg.jwt)?;
         let (nats, jet) = crate::nats::connect(&cfg.nats_url).await?;
-        Ok(Self { jwt, store, nats, jet, metrics })
+        Ok(Self { jwt, store, nats, jet, metrics, admin_token: None })
+    }
+
+    /// Attach the admin-API shared secret. The boot path in
+    /// `elena-server` calls this once after `connect` if
+    /// `ELENA_ADMIN_TOKEN` is present in env.
+    #[must_use]
+    pub fn with_admin_token(mut self, token: SecretString) -> Self {
+        self.admin_token = Some(token);
+        self
     }
 }
 
@@ -65,8 +79,11 @@ impl FromRef<GatewayState> for Arc<LoopMetrics> {
 
 /// Build the axum router wired with the public routes and the state.
 pub fn build_router(state: GatewayState) -> Router {
-    let admin_state =
+    let mut admin_state =
         elena_admin::AdminState::new(Arc::clone(&state.store), Some(state.nats.clone()));
+    if let Some(token) = state.admin_token.clone() {
+        admin_state = admin_state.with_admin_token(token);
+    }
     let admin = elena_admin::admin_router(admin_state);
 
     let core = Router::new()
