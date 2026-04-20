@@ -134,7 +134,10 @@ async fn main() -> anyhow::Result<()> {
             issuer: std::env::var("ELENA_JWT_ISSUER").unwrap_or_else(|_| "elena".into()),
             audience: std::env::var("ELENA_JWT_AUDIENCE")
                 .unwrap_or_else(|_| "elena-clients".into()),
-            leeway_seconds: 60,
+            leeway_seconds: std::env::var("ELENA_GATEWAY__JWT__LEEWAY_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(60),
         },
     };
     let mut gateway_state =
