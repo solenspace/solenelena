@@ -2,6 +2,7 @@
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
 use elena_types::ThreadId;
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +32,7 @@ pub async fn create_thread(
     State(state): State<GatewayState>,
     AuthedTenant(tenant): AuthedTenant,
     body: Option<Json<CreateThreadRequest>>,
-) -> Result<Json<CreateThreadResponse>, GatewayError> {
+) -> Result<(StatusCode, Json<CreateThreadResponse>), GatewayError> {
     let title = body.and_then(|Json(b)| b.title);
     let thread_id = state
         .store
@@ -39,5 +40,5 @@ pub async fn create_thread(
         .create_thread(tenant.tenant_id, tenant.user_id, tenant.workspace_id, title.as_deref())
         .await
         .map_err(GatewayError::Store)?;
-    Ok(Json(CreateThreadResponse { thread_id }))
+    Ok((StatusCode::CREATED, Json(CreateThreadResponse { thread_id })))
 }
