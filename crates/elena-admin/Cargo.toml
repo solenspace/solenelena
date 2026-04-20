@@ -11,8 +11,9 @@ repository   = { workspace = true }
 workspace = true
 
 [dependencies]
-elena-types = { workspace = true }
-elena-store = { workspace = true }
+elena-types   = { workspace = true }
+elena-store   = { workspace = true }
+elena-plugins = { workspace = true }
 
 axum       = { workspace = true, features = ["query"] }
 tower      = { workspace = true }

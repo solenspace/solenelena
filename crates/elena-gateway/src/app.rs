@@ -6,6 +6,7 @@ use axum::Router;
 use axum::extract::FromRef;
 use axum::routing::{get, post};
 use elena_observability::LoopMetrics;
+use elena_plugins::PluginRegistry;
 use elena_store::Store;
 use secrecy::SecretString;
 
@@ -34,6 +35,11 @@ pub struct GatewayState {
     /// every `/admin/v1/*` call. `None` disables the check (tests +
     /// smokes); production sets it from `ELENA_ADMIN_TOKEN`.
     pub admin_token: Option<SecretString>,
+    /// Optional plugin registry handed off to the admin router so
+    /// `GET /admin/v1/plugins` reflects the live registration set. The
+    /// boot path in `elena-server` calls `with_plugins(...)` after
+    /// constructing the registry.
+    pub plugins: Option<Arc<PluginRegistry>>,
 }
 
 impl std::fmt::Debug for GatewayState {
@@ -52,7 +58,7 @@ impl GatewayState {
     ) -> Result<Self, GatewayError> {
         let jwt = JwtValidator::from_config(&cfg.jwt)?;
         let (nats, jet) = crate::nats::connect(&cfg.nats_url).await?;
-        Ok(Self { jwt, store, nats, jet, metrics, admin_token: None })
+        Ok(Self { jwt, store, nats, jet, metrics, admin_token: None, plugins: None })
     }
 
     /// Attach the admin-API shared secret. The boot path in
@@ -61,6 +67,14 @@ impl GatewayState {
     #[must_use]
     pub fn with_admin_token(mut self, token: SecretString) -> Self {
         self.admin_token = Some(token);
+        self
+    }
+
+    /// Attach the plugin registry so the admin router can answer
+    /// `GET /admin/v1/plugins`.
+    #[must_use]
+    pub fn with_plugins(mut self, plugins: Arc<PluginRegistry>) -> Self {
+        self.plugins = Some(plugins);
         self
     }
 }
@@ -83,6 +97,9 @@ pub fn build_router(state: GatewayState) -> Router {
         elena_admin::AdminState::new(Arc::clone(&state.store), Some(state.nats.clone()));
     if let Some(token) = state.admin_token.clone() {
         admin_state = admin_state.with_admin_token(token);
+    }
+    if let Some(plugins) = state.plugins.clone() {
+        admin_state = admin_state.with_plugins(plugins);
     }
     let admin = elena_admin::admin_router(admin_state);
 
