@@ -18,6 +18,10 @@ vault = []
 kms = ["dep:aws-sdk-kms"]
 
 [dependencies]
+elena-types = { workspace = true }
+elena-store = { workspace = true }
+
+axum        = { workspace = true }
 tokio       = { workspace = true }
 tokio-util  = { workspace = true }
 async-trait = { workspace = true }
@@ -33,9 +37,13 @@ jsonwebtoken = { workspace = true }
 rustls         = { workspace = true }
 rustls-pemfile = { workspace = true }
 notify      = { workspace = true }
+sha2        = "0.10"
+subtle      = "2"
 
 aws-sdk-kms = { version = "1", optional = true }
 
 [dev-dependencies]
 tokio      = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 tempfile   = "3"
+chrono     = { workspace = true }
+tower      = { workspace = true, features = ["util"] }

@@ -5,6 +5,8 @@
 //!
 //! Run with `cargo test -p elena-store --test phase7_blockers`.
 
+// B1.6 — soak deprecated TenantTier warnings until the type is removed.
+#![allow(deprecated)]
 #![cfg(test)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

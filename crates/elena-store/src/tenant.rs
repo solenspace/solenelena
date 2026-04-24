@@ -5,7 +5,7 @@
 //! themselves are upserted and fetched.
 
 use chrono::{DateTime, Utc};
-use elena_types::{BudgetLimits, PermissionSet, StoreError, TenantId, TenantTier, Usage};
+use elena_types::{BudgetLimits, PermissionSet, StoreError, TenantId, TenantTier, ThreadId, Usage};
 use serde_json::Value;
 use sqlx::{PgPool, Row};
 
@@ -26,9 +26,9 @@ pub struct TenantRecord {
     pub permissions: PermissionSet,
     /// Opaque app-specific metadata.
     pub metadata: std::collections::HashMap<String, Value>,
-    /// Phase 7 · A4 — plugin allow-list. Empty means "all plugins" for
-    /// backwards compatibility; a non-empty list restricts which plugin
-    /// IDs this tenant can see in `PluginRegistry::tools_for`.
+    /// Plugin allow-list. Empty means "all plugins" for backwards
+    /// compatibility; a non-empty list restricts which plugin IDs this
+    /// tenant can see in `PluginRegistry::tools_for`.
     pub allowed_plugin_ids: Vec<String>,
     /// When the tenant row was first created.
     pub created_at: DateTime<Utc>,
@@ -158,6 +158,53 @@ impl TenantStore {
         Ok(())
     }
 
+    /// Replace the per-tenant admin-scope hash. Pass `None` to clear
+    /// (the tenant then inherits the global admin token).
+    ///
+    /// The hash bytes are stored verbatim — callers must SHA-256 the
+    /// raw token before invoking this, and the DB CHECK enforces
+    /// `octet_length = 32`.
+    pub async fn set_admin_scope_hash(
+        &self,
+        id: TenantId,
+        hash: Option<&[u8; 32]>,
+    ) -> Result<(), StoreError> {
+        let rows = sqlx::query("UPDATE tenants SET admin_scope_hash = $1 WHERE id = $2")
+            .bind(hash.map(<[u8; 32]>::as_slice))
+            .bind(id.as_uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(classify_sqlx)?;
+        if rows.rows_affected() == 0 {
+            return Err(StoreError::TenantNotFound(id));
+        }
+        Ok(())
+    }
+
+    /// Fetch the per-tenant admin-scope hash. `Ok(None)` when the
+    /// tenant inherits the global admin token (no per-tenant scope set).
+    pub async fn get_admin_scope_hash(&self, id: TenantId) -> Result<Option<[u8; 32]>, StoreError> {
+        let row = sqlx::query("SELECT admin_scope_hash FROM tenants WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(classify_sqlx)?;
+        let Some(row) = row else { return Err(StoreError::TenantNotFound(id)) };
+        let raw: Option<Vec<u8>> = row.try_get("admin_scope_hash").map_err(classify_sqlx)?;
+        match raw {
+            None => Ok(None),
+            Some(bytes) => {
+                let arr: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
+                    StoreError::Database(format!(
+                        "admin_scope_hash for {id} has wrong length: {} bytes",
+                        v.len()
+                    ))
+                })?;
+                Ok(Some(arr))
+            }
+        }
+    }
+
     /// Fetch current budget state. Returns a fresh zero'd state if no row
     /// exists yet (equivalent to "nothing has been billed to this tenant").
     pub async fn get_budget_state(&self, id: TenantId) -> Result<BudgetState, StoreError> {
@@ -218,6 +265,53 @@ impl TenantStore {
         .map_err(classify_sqlx)?;
 
         Ok(())
+    }
+
+    /// C2 — Add this turn's usage to the cumulative per-thread token
+    /// counter. The counter is what `get_thread_usage` returns; the
+    /// worker loads it at fresh-start so the per-thread budget cap
+    /// evaluates against the real total.
+    pub async fn record_thread_usage(
+        &self,
+        tenant_id: TenantId,
+        thread_id: ThreadId,
+        usage: Usage,
+    ) -> Result<(), StoreError> {
+        let total = i64::try_from(usage.total()).unwrap_or(i64::MAX);
+        sqlx::query(
+            "INSERT INTO thread_usage (tenant_id, thread_id, tokens_used)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (tenant_id, thread_id) DO UPDATE SET
+                 tokens_used = thread_usage.tokens_used + EXCLUDED.tokens_used",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(thread_id.as_uuid())
+        .bind(total)
+        .execute(&self.pool)
+        .await
+        .map_err(classify_sqlx)?;
+        Ok(())
+    }
+
+    /// Return the cumulative tokens spent on a given thread. `Ok(0)`
+    /// when no row exists (fresh thread).
+    pub async fn get_thread_usage(
+        &self,
+        tenant_id: TenantId,
+        thread_id: ThreadId,
+    ) -> Result<u64, StoreError> {
+        let row = sqlx::query(
+            "SELECT tokens_used FROM thread_usage
+             WHERE tenant_id = $1 AND thread_id = $2",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(thread_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(classify_sqlx)?;
+        let Some(row) = row else { return Ok(0) };
+        let used: i64 = row.try_get("tokens_used").map_err(classify_sqlx)?;
+        Ok(u64::try_from(used).unwrap_or(0))
     }
 }
 

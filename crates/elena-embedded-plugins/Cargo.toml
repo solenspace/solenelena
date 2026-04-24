@@ -1,7 +1,7 @@
 [package]
 name         = "elena-embedded-plugins"
 version      = "0.1.0"
-description  = "Host plugin connectors as in-process tonic sidecars on loopback ports."
+description  = "X7 — Register first-party connectors directly into the PluginRegistry as in-process EmbeddedExecutors. No loopback gRPC."
 edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
@@ -22,8 +22,6 @@ elena-connector-notion  = { workspace = true }
 elena-connector-sheets  = { workspace = true }
 elena-connector-shopify = { workspace = true }
 
-tokio        = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }
-tokio-stream = { workspace = true, features = ["net"] }
-tonic        = { workspace = true }
+tokio        = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 anyhow       = { workspace = true }
 tracing      = { workspace = true }

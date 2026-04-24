@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use elena_types::{StoreError, TenantId, ThreadId, WorkspaceId};
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{PgPool, QueryBuilder};
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -29,6 +29,12 @@ use crate::sql_error::classify_sqlx;
 /// Bounded audit-write queue depth. 10 000 events is ~1 MB of memory and
 /// is enough to absorb a few seconds of burst under normal load.
 pub const AUDIT_CHANNEL_CAP: usize = 10_000;
+
+/// X10 — Maximum events flushed per multi-row INSERT. Postgres'
+/// extended-protocol bind limit is 65535 parameters; 8 columns × 500
+/// rows = 4000 binds, comfortably under. Larger batches don't gain
+/// much (one round-trip dominates) and risk longer table-lock windows.
+const AUDIT_BATCH_MAX: usize = 500;
 
 /// One audit row. Construct via the helper constructors in [`Self`].
 #[derive(Debug, Clone)]
@@ -148,6 +154,12 @@ impl PostgresAuditSink {
     /// and writes them to `audit_events`. Each dropped event invokes
     /// `on_drop(1)` synchronously so a Prometheus counter (or any
     /// caller-supplied counter) can pick it up.
+    ///
+    /// X10 — the flusher batches up to [`AUDIT_BATCH_MAX`] events per
+    /// `INSERT`. Pre-X10 the loop issued one `INSERT` per event,
+    /// which capped throughput at the per-row round-trip latency. The
+    /// batch issues a single multi-row VALUES insert so a 50-call turn
+    /// becomes one DB round-trip instead of fifty.
     #[must_use]
     pub fn spawn_with_callback(pool: PgPool, on_drop: DropCallback) -> Self {
         let (tx, mut rx) = mpsc::channel::<AuditEvent>(AUDIT_CHANNEL_CAP);
@@ -156,14 +168,24 @@ impl PostgresAuditSink {
         let on_drop_for_task = Arc::clone(&on_drop);
 
         tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                if let Err(e) = write_one(&pool, &event).await {
-                    // Increment the drops counter — the row didn't
-                    // persist. Worst case we lose a few audit rows to a
-                    // DB outage; the loop itself carries on.
-                    drops_for_task.fetch_add(1, Ordering::Relaxed);
-                    on_drop_for_task(1);
-                    warn!(?e, kind = %event.kind, "audit write failed");
+            let mut batch: Vec<AuditEvent> = Vec::with_capacity(AUDIT_BATCH_MAX);
+            while let Some(first) = rx.recv().await {
+                batch.clear();
+                batch.push(first);
+                // Greedy drain: take whatever's already buffered. Bounded
+                // by AUDIT_BATCH_MAX so a flooded channel doesn't starve
+                // the DB write with one giant INSERT.
+                while batch.len() < AUDIT_BATCH_MAX {
+                    match rx.try_recv() {
+                        Ok(ev) => batch.push(ev),
+                        Err(_) => break,
+                    }
+                }
+                if let Err(e) = write_batch(&pool, &batch).await {
+                    let n = u64::try_from(batch.len()).unwrap_or(0);
+                    drops_for_task.fetch_add(n, Ordering::Relaxed);
+                    on_drop_for_task(n);
+                    warn!(?e, batch_size = batch.len(), "audit batch write failed");
                 }
             }
         });
@@ -198,23 +220,28 @@ impl AuditSink for PostgresAuditSink {
     }
 }
 
-async fn write_one(pool: &PgPool, event: &AuditEvent) -> Result<(), StoreError> {
-    sqlx::query(
+/// X10 — Multi-row INSERT for one batch drained off the channel.
+/// `QueryBuilder::push_values` handles parameter binding cleanly; one
+/// round-trip flushes the whole batch.
+async fn write_batch(pool: &PgPool, events: &[AuditEvent]) -> Result<(), StoreError> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let mut qb = QueryBuilder::<sqlx::Postgres>::new(
         "INSERT INTO audit_events
-            (id, tenant_id, workspace_id, thread_id, actor, kind, payload, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(event.id)
-    .bind(event.tenant_id.as_uuid())
-    .bind(event.workspace_id.map(|w| w.as_uuid()))
-    .bind(event.thread_id.map(|t| t.as_uuid()))
-    .bind(&event.actor)
-    .bind(&event.kind)
-    .bind(&event.payload)
-    .bind(event.created_at)
-    .execute(pool)
-    .await
-    .map_err(classify_sqlx)?;
+            (id, tenant_id, workspace_id, thread_id, actor, kind, payload, created_at) ",
+    );
+    qb.push_values(events, |mut b, ev| {
+        b.push_bind(ev.id)
+            .push_bind(ev.tenant_id.as_uuid())
+            .push_bind(ev.workspace_id.map(|w| w.as_uuid()))
+            .push_bind(ev.thread_id.map(|t| t.as_uuid()))
+            .push_bind(&ev.actor)
+            .push_bind(&ev.kind)
+            .push_bind(&ev.payload)
+            .push_bind(ev.created_at);
+    });
+    qb.build().execute(pool).await.map_err(classify_sqlx)?;
     Ok(())
 }
 

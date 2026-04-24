@@ -8,15 +8,16 @@ use std::collections::HashMap;
 use axum::{
     Json,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use chrono::Utc;
 use elena_store::TenantRecord;
-use elena_types::{BudgetLimits, PermissionSet, TenantId, TenantTier};
+use elena_types::{BudgetLimits, PermissionSet, Plan, PlanId, PlanSlug, TenantId, TenantTier};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::auth::{hash_scope_token, require_tenant_scope};
 use crate::state::AdminState;
 
 /// Request body for `POST /admin/v1/tenants`.
@@ -39,7 +40,7 @@ pub struct CreateTenantRequest {
     /// Opaque metadata map.
     #[serde(default)]
     pub metadata: HashMap<String, Value>,
-    /// Phase 7 · A4 — plugin allow-list. Empty = no filter.
+    /// Plugin allow-list. Empty = no filter.
     #[serde(default)]
     pub allowed_plugin_ids: Vec<String>,
 }
@@ -69,12 +70,16 @@ pub struct UpdateAllowedPluginsRequest {
     pub allowed_plugin_ids: Vec<String>,
 }
 
-/// `PATCH /admin/v1/tenants/:id/allowed-plugins` — A4 allow-list swap.
+/// `PATCH /admin/v1/tenants/:id/allowed-plugins` — allow-list swap.
 pub async fn update_allowed_plugins(
     State(state): State<AdminState>,
     Path(id): Path<TenantId>,
+    headers: HeaderMap,
     Json(req): Json<UpdateAllowedPluginsRequest>,
 ) -> impl IntoResponse {
+    if let Err(s) = require_tenant_scope(&state.store, id, &headers).await {
+        return s.into_response();
+    }
     match state.store.tenants.update_allowed_plugins(id, &req.allowed_plugin_ids).await {
         Ok(()) => (StatusCode::OK, "updated").into_response(),
         Err(elena_types::StoreError::TenantNotFound(_)) => {
@@ -104,25 +109,70 @@ pub async fn create_tenant(
         created_at: now,
         updated_at: now,
     };
-    match state.store.tenants.upsert_tenant(&record).await {
-        Ok(()) => (
-            StatusCode::CREATED,
-            Json(TenantResponse { id: record.id, name: record.name, tier: record.tier }),
-        )
-            .into_response(),
-        Err(e) => {
-            tracing::error!(?e, "create_tenant failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("tenant upsert failed: {e}"))
-                .into_response()
+    if let Err(e) = state.store.tenants.upsert_tenant(&record).await {
+        tracing::error!(?e, "create_tenant failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("tenant upsert failed: {e}"))
+            .into_response();
+    }
+
+    // B1 — seed a default plan on first create. The migration backfill
+    // covers pre-B1 tenants; new tenants need this so the resolver
+    // (which falls back to plans.is_default = true) always finds a row.
+    // Re-running create-tenant on an existing tenant skips this step
+    // because `default_for_tenant` returns the existing default.
+    if state.store.plans.default_for_tenant(record.id).await.is_err() {
+        let slug = match record.tier {
+            TenantTier::Free => "free",
+            TenantTier::Pro => "pro",
+            TenantTier::Team => "team",
+            TenantTier::Enterprise => "enterprise",
+        };
+        let plan = Plan {
+            id: PlanId::new(),
+            tenant_id: record.id,
+            slug: PlanSlug::new(slug),
+            display_name: slug.to_owned(),
+            is_default: true,
+            budget: record.budget,
+            rate_limits: serde_json::json!({}),
+            allowed_plugin_ids: record.allowed_plugin_ids.clone(),
+            tier_models: None,
+            autonomy_default: elena_types::AutonomyMode::Moderate,
+            cache_policy: serde_json::json!({}),
+            max_cascade_escalations: 1,
+            metadata: std::collections::HashMap::new(),
+            created_at: now,
+            updated_at: now,
+        };
+        if let Err(e) = state.store.plans.upsert(&plan).await {
+            // Tenant exists; default plan failed to seed. Surface a 500
+            // so admin tooling notices and either retries or seeds a
+            // plan via POST /plans manually.
+            tracing::error!(?e, tenant_id = %record.id, "default plan seed failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("tenant created but default plan seed failed: {e}"),
+            )
+                .into_response();
         }
     }
+
+    (
+        StatusCode::CREATED,
+        Json(TenantResponse { id: record.id, name: record.name, tier: record.tier }),
+    )
+        .into_response()
 }
 
 /// `GET /admin/v1/tenants/:id` — fetch a tenant by id.
 pub async fn get_tenant(
     State(state): State<AdminState>,
     Path(id): Path<TenantId>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    if let Err(s) = require_tenant_scope(&state.store, id, &headers).await {
+        return s.into_response();
+    }
     match state.store.tenants.get_tenant(id).await {
         Ok(record) => (
             StatusCode::OK,
@@ -143,8 +193,12 @@ pub async fn get_tenant(
 pub async fn update_budget(
     State(state): State<AdminState>,
     Path(id): Path<TenantId>,
+    headers: HeaderMap,
     Json(req): Json<UpdateBudgetRequest>,
 ) -> impl IntoResponse {
+    if let Err(s) = require_tenant_scope(&state.store, id, &headers).await {
+        return s.into_response();
+    }
     // Re-read + re-upsert to preserve name/tier/metadata. `upsert_tenant`
     // is idempotent on the primary key.
     let current = match state.store.tenants.get_tenant(id).await {
@@ -165,6 +219,49 @@ pub async fn update_budget(
             .into_response(),
         Err(e) => {
             tracing::error!(?e, "update_budget failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+/// Request body for `PUT /admin/v1/tenants/:id/admin-scope`.
+///
+/// Empty `token` clears the per-tenant scope (tenant inherits the
+/// global admin token again). Any non-empty value provisions a new
+/// scope: the server SHA-256s it on receive and never persists the
+/// raw value.
+#[derive(Debug, Deserialize)]
+pub struct SetAdminScopeRequest {
+    /// Plaintext scope token. Server hashes; raw bytes are not
+    /// persisted. Empty string clears.
+    pub token: String,
+}
+
+/// `PUT /admin/v1/tenants/:id/admin-scope` — provision/rotate the
+/// per-tenant admin scope. Bootstrapping requires the global
+/// `X-Elena-Admin-Token` plus the *current* `X-Elena-Tenant-Scope`
+/// (when one is already set), so a leaked global token alone can't
+/// rotate a tenant's scope without also holding the existing scope.
+pub async fn set_admin_scope(
+    State(state): State<AdminState>,
+    Path(id): Path<TenantId>,
+    headers: HeaderMap,
+    Json(req): Json<SetAdminScopeRequest>,
+) -> impl IntoResponse {
+    if let Err(s) = require_tenant_scope(&state.store, id, &headers).await {
+        return s.into_response();
+    }
+    let new_hash = if req.token.is_empty() { None } else { Some(hash_scope_token(&req.token)) };
+    match state.store.tenants.set_admin_scope_hash(id, new_hash.as_ref()).await {
+        Ok(()) => {
+            let body = if new_hash.is_some() { "scope set" } else { "scope cleared" };
+            (StatusCode::OK, body).into_response()
+        }
+        Err(elena_types::StoreError::TenantNotFound(_)) => {
+            (StatusCode::NOT_FOUND, format!("tenant {id} not found")).into_response()
+        }
+        Err(e) => {
+            tracing::error!(?e, %id, "set_admin_scope failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

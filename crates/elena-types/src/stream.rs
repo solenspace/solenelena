@@ -114,6 +114,48 @@ pub enum StreamEvent {
     Done(Terminal),
 }
 
+/// X4 — Wire-level wrapper that stamps a per-thread monotonic offset
+/// onto every event the worker publishes.
+///
+/// The offset is generated via Redis INCR per `(thread_id, event)` so
+/// it survives worker crashes and gateway restarts. Clients track the
+/// last `offset` they saw; on reconnect they pass `?since=<offset>` to
+/// the WS upgrade and the gateway prepends a Postgres-replay of any
+/// persisted messages newer than the last seen offset before joining
+/// the live stream.
+///
+/// The flat-tagged shape (`{"offset": 42, "event": {...}}`) keeps the
+/// wire compatible with consumers that just want the inner `event` —
+/// they peel one layer and recover the pre-X4 `StreamEvent` shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StreamEnvelope {
+    /// Per-thread monotonic counter. Strictly increasing across the
+    /// thread's lifetime. `0` is reserved for replay events
+    /// reconstructed from persisted messages (which never had a live
+    /// offset assigned).
+    pub offset: u64,
+    /// The wrapped event.
+    pub event: StreamEvent,
+}
+
+impl StreamEnvelope {
+    /// Wrap an event with an explicit offset.
+    #[must_use]
+    pub const fn new(offset: u64, event: StreamEvent) -> Self {
+        Self { offset, event }
+    }
+
+    /// Sentinel offset for events synthesized during replay (i.e.
+    /// derived from persisted messages, not from a live stream).
+    pub const REPLAY_OFFSET: u64 = 0;
+
+    /// Build a replay envelope (offset = `REPLAY_OFFSET`).
+    #[must_use]
+    pub const fn replay(event: StreamEvent) -> Self {
+        Self { offset: Self::REPLAY_OFFSET, event }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

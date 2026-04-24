@@ -1,10 +1,10 @@
 //! Plugin CRUD — `/admin/v1/plugins`.
 //!
-//! Phase 7 ships the ownership-management subset: creators register
-//! plugins (via the plugin gRPC sidecar at startup) and operators
-//! declare which tenants see them via this endpoint. Re-registration
-//! itself still flows through gateway boot, not the admin API; that
-//! lands in a v1.0.x patch.
+//! Ships the ownership-management subset: creators register plugins
+//! (via the plugin gRPC sidecar at startup) and operators declare which
+//! tenants see them via this endpoint. Re-registration itself still
+//! flows through gateway boot, not the admin API; that lands in a
+//! v1.0.x patch.
 
 use axum::{
     Json,
@@ -82,10 +82,7 @@ impl From<PluginManifest> for RegisteredPluginView {
 /// Returns 503 if the registry was never attached (test / smoke build).
 pub async fn list_registered(State(state): State<AdminState>) -> impl IntoResponse {
     let Some(plugins) = state.plugins else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "plugin registry not attached to AdminState",
-        )
+        return (StatusCode::SERVICE_UNAVAILABLE, "plugin registry not attached to AdminState")
             .into_response();
     };
     let view: Vec<RegisteredPluginView> =

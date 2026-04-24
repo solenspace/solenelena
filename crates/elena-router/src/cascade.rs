@@ -1,7 +1,7 @@
 //! Reactive cascade check — runs after the LLM stream completes and decides
 //! whether the loop should re-issue the turn at a higher tier.
 //!
-//! Signals (deterministic for Phase 4):
+//! Signals (deterministic):
 //! 1. The model refused (keyword match on common refusal phrases).
 //! 2. The model emitted a `tool_use` for a tool that isn't registered
 //!    (hallucination).

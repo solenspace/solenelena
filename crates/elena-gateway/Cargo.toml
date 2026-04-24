@@ -21,6 +21,7 @@ elena-store         = { workspace = true }
 elena-observability = { workspace = true }
 elena-plugins       = { workspace = true }
 elena-admin         = { workspace = true }
+elena-auth          = { workspace = true }
 
 tokio              = { workspace = true }
 tokio-util         = { workspace = true }
@@ -40,6 +41,8 @@ tower        = { workspace = true }
 tower-http   = { workspace = true }
 async-nats   = { workspace = true }
 jsonwebtoken = { workspace = true }
+dashmap      = { workspace = true }
+bytes        = { workspace = true }
 
 [dev-dependencies]
 tokio             = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

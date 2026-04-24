@@ -165,9 +165,22 @@ define_id! {
 
 define_id! {
     /// Identifies a single transport-level work request flowing from the
-    /// gateway to a worker. Phase 5 uses this as the NATS deduplication
-    /// key when the same request is redelivered after a worker crash.
+    /// gateway to a worker. Used as the NATS deduplication key when the
+    /// same request is redelivered after a worker crash.
     RequestId, "RequestId"
+}
+
+define_id! {
+    /// Identifies a tenant-scoped policy bundle (a "plan"). Plans replace
+    /// the closed [`crate::TenantTier`] enum: each tenant defines its own
+    /// plans via the admin API and assigns users / workspaces to them.
+    PlanId, "PlanId"
+}
+
+define_id! {
+    /// Identifies a single row in the plan-assignments table — the rule
+    /// that maps a (tenant, user?, workspace?) shape to a [`PlanId`].
+    PlanAssignmentId, "PlanAssignmentId"
 }
 
 /// Identifies a plugin connector by its user-supplied namespace.

@@ -1,16 +1,15 @@
 //! Character-based token-count approximation.
 //!
-//! Elena needs to keep context windows under the model's budget, but neither
-//! the Anthropic API nor the public `tiktoken-rs` crate ships a Claude
-//! tokenizer as of Phase 4. Empirically, Claude's BPE-style tokenizer sits
-//! around 3.5 characters per token for English prose and ~2.5 for
-//! punctuation-heavy or non-English input. We use a slightly conservative
-//! constant (`3.2`) so budget math under-counts tokens — a pack that fits
-//! this estimate will also fit the real tokenizer.
+//! Elena needs to keep context windows under the model's budget, but
+//! neither the Anthropic API nor the public `tiktoken-rs` crate ships a
+//! Claude tokenizer at this layer. Empirically, Claude's BPE-style
+//! tokenizer sits around 3.5 characters per token for English prose and
+//! ~2.5 for punctuation-heavy or non-English input. We use a slightly
+//! conservative constant (`3.2`) so budget math under-counts tokens —
+//! a pack that fits this estimate will also fit the real tokenizer.
 //!
-//! Good enough for Phase 4. Phase 5 can switch to Anthropic's
-//! `/v1/messages/count_tokens` endpoint when batched token counting is worth
-//! the round-trip.
+//! Switching to Anthropic's `/v1/messages/count_tokens` endpoint is a
+//! future option once batched token counting is worth the round-trip.
 
 /// Characters per token (conservative estimate).
 const CHARS_PER_TOKEN: f32 = 3.2;

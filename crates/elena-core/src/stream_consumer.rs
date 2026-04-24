@@ -8,11 +8,14 @@
 //! ([`StreamEvent::Error`](elena_types::StreamEvent::Error)) the contained
 //! [`ElenaError`] is surfaced directly.
 //!
-//! Thinking blocks are observed for telemetry but not persisted in Phase 3 —
-//! the wire `ThinkingDelta` doesn't carry the signature field
-//! [`ContentBlock::Thinking`] requires, and we don't yet need a replay of
-//! the model's reasoning. Phase 4's compaction layer will surface the
-//! signature when it needs to hash reasoning into the cache key.
+//! Thinking blocks are observed for telemetry but not persisted — the
+//! wire `ThinkingDelta` doesn't carry the signature field
+//! [`ContentBlock::Thinking`] requires, and we don't yet need a replay
+//! of the model's reasoning. The compaction layer in `elena-context`
+//! will surface the signature when it needs to hash reasoning into the
+//! cache key.
+
+use std::time::Duration;
 
 use chrono::Utc;
 use elena_tools::ToolInvocation;
@@ -23,6 +26,11 @@ use elena_types::{
 use futures::{Stream, StreamExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+/// C6 — Inter-event watchdog. If we don't see *any* event from the
+/// upstream LLM stream for this long the loop classifies it as a
+/// timeout instead of waiting silently for reqwest's idle timeout.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What [`consume_stream`] produces on a clean run.
 #[derive(Debug, Clone)]
@@ -47,6 +55,7 @@ pub struct ConsumedStream {
 /// The stream's own `Error` + `Done` events are still forwarded before the
 /// function returns, so the caller's outbound channel sees the full event
 /// sequence regardless of outcome.
+#[allow(clippy::too_many_lines)]
 pub async fn consume_stream<S>(
     mut stream: S,
     tenant_id: TenantId,
@@ -74,11 +83,23 @@ where
             () = cancel.cancelled() => {
                 return Err(ElenaError::Aborted);
             }
-            next = stream.next() => match next {
-                Some(e) => e,
-                None => {
+            next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()) => match next {
+                // Stream yielded an event in time.
+                Ok(Some(e)) => e,
+                // Stream ended without Done.
+                Ok(None) => {
                     return Err(ElenaError::LlmApi(LlmApiError::ConnectionError {
                         message: "upstream stream ended without Done".to_owned(),
+                    }));
+                }
+                // C6 — Idle watchdog fired; treat as a provider stall.
+                // The driver classifies the resulting error as a Timeout
+                // and the client sees a clean failure instead of a
+                // silent hang.
+                Err(_) => {
+                    return Err(ElenaError::LlmApi(LlmApiError::ApiTimeout {
+                        elapsed_ms: u64::try_from(STREAM_IDLE_TIMEOUT.as_millis())
+                            .unwrap_or(u64::MAX),
                     }));
                 }
             },

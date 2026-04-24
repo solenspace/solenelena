@@ -6,8 +6,8 @@ use axum::{
 };
 
 use crate::{
-    auth::require_admin_token, health, plugins, state::AdminState, tenant_credentials, tenants,
-    workspaces,
+    auth::require_admin_token, health, plan_assignments, plans, plugins, state::AdminState,
+    tenant_credentials, tenants, workspaces,
 };
 
 /// Build the admin router. Caller mounts it at `/admin/v1` on the
@@ -24,9 +24,22 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/tenants/{id}", get(tenants::get_tenant))
         .route("/tenants/{id}/budget", patch(tenants::update_budget))
         .route("/tenants/{id}/allowed-plugins", patch(tenants::update_allowed_plugins))
+        .route("/tenants/{id}/admin-scope", put(tenants::set_admin_scope))
         .route(
             "/tenants/{id}/credentials/{plugin_id}",
             put(tenant_credentials::put_credentials).delete(tenant_credentials::delete_credentials),
+        )
+        .route("/tenants/{tenant_id}/plans", post(plans::create_plan).get(plans::list_plans))
+        .route(
+            "/tenants/{tenant_id}/plans/{plan_id}",
+            get(plans::get_plan).patch(plans::update_plan).delete(plans::delete_plan),
+        )
+        .route("/tenants/{tenant_id}/default-plan", patch(plans::set_default_plan))
+        .route(
+            "/tenants/{tenant_id}/assignments",
+            put(plan_assignments::upsert_assignment)
+                .get(plan_assignments::list_assignments)
+                .delete(plan_assignments::delete_assignment),
         )
         .route("/workspaces", post(workspaces::upsert_workspace))
         .route("/workspaces/{id}", get(workspaces::get_workspace))

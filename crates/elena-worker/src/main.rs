@@ -1,4 +1,4 @@
-//! elena-worker binary — Phase 5 scaffold.
+//! elena-worker binary scaffold.
 
 #[allow(clippy::print_stderr)]
 fn main() {

@@ -4,7 +4,9 @@
 //! worker that lost connection cannot unclaim a thread that was legitimately
 //! reassigned to a new worker.
 
-use elena_types::{StoreError, ThreadId};
+use std::collections::HashSet;
+
+use elena_types::{RequestId, StoreError, ThreadId, ToolCallId};
 use fred::{
     clients::Pool,
     prelude::{KeysInterface, LuaInterface},
@@ -182,6 +184,109 @@ impl SessionCache {
             .map_err(|e| StoreError::Cache(e.to_string()))?;
         Ok(())
     }
+
+    /// S4 — Persist the set of tool-call IDs the loop is currently
+    /// awaiting approvals for. Stored as a JSON-encoded array of ULID
+    /// strings under a per-thread key with a `ttl_ms` expiry that
+    /// matches the pause deadline. The gateway's approvals POST loads
+    /// this set and rejects any decision whose `tool_use_id` isn't in
+    /// it, defending against replays of an old approval batch.
+    pub async fn save_pending_approvals(
+        &self,
+        thread_id: ThreadId,
+        ids: &HashSet<ToolCallId>,
+        ttl_ms: u64,
+    ) -> Result<(), StoreError> {
+        let payload =
+            serde_json::to_vec(ids).map_err(|e| StoreError::Serialization(e.to_string()))?;
+        let _: Option<String> = self
+            .pool
+            .set(
+                pending_approvals_key(thread_id),
+                payload,
+                Some(Expiration::PX(i64::try_from(ttl_ms).unwrap_or(i64::MAX))),
+                None,
+                false,
+            )
+            .await
+            .map_err(|e| StoreError::Cache(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Load the pending-approvals set. `Ok(None)` means the loop is
+    /// not currently awaiting approval (or the key TTL'd out).
+    pub async fn load_pending_approvals(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<Option<HashSet<ToolCallId>>, StoreError> {
+        let bytes: Option<Vec<u8>> = self
+            .pool
+            .get(pending_approvals_key(thread_id))
+            .await
+            .map_err(|e| StoreError::Cache(e.to_string()))?;
+        let Some(bytes) = bytes else { return Ok(None) };
+        let set: HashSet<ToolCallId> =
+            serde_json::from_slice(&bytes).map_err(|e| StoreError::Serialization(e.to_string()))?;
+        Ok(Some(set))
+    }
+
+    /// X4 — Atomic per-thread event-offset INCR.
+    ///
+    /// Used by the worker's event publisher to stamp every published
+    /// `StreamEvent` with a monotonic offset. Survives worker /
+    /// gateway restarts because the counter is in Redis. The key has
+    /// no TTL — a long-lived thread keeps a stable offset namespace.
+    pub async fn next_event_offset(&self, thread_id: ThreadId) -> Result<u64, StoreError> {
+        let key = event_offset_key(thread_id);
+        let n: i64 = self.pool.incr(key).await.map_err(|e| StoreError::Cache(e.to_string()))?;
+        Ok(u64::try_from(n).unwrap_or(u64::MAX))
+    }
+
+    /// S5 — `WorkRequest` idempotency guard.
+    ///
+    /// `JetStream` is at-least-once: a worker that crashes between
+    /// processing a request and ack-ing it will see the same
+    /// `WorkRequest` redelivered. Without this guard the redelivery
+    /// re-runs every side effect (rate-limit decrement, claim attempt,
+    /// even tool execution if the dedup fingerprint isn't yet written).
+    ///
+    /// Returns `true` if this is the first time we've seen `request_id`
+    /// (caller proceeds). Returns `false` if the request has already
+    /// been processed (caller acks immediately and skips). Failure to
+    /// reach Redis falls open (treats it as first-seen) so a Redis
+    /// outage degrades to the pre-S5 at-least-once posture rather than
+    /// dropping work entirely.
+    pub async fn try_claim_request(
+        &self,
+        request_id: RequestId,
+        ttl_seconds: u64,
+    ) -> Result<bool, StoreError> {
+        let key = work_request_key(request_id);
+        let res: Option<String> = self
+            .pool
+            .set(
+                key,
+                "1",
+                Some(Expiration::EX(i64::try_from(ttl_seconds).unwrap_or(i64::MAX))),
+                Some(fred::types::SetOptions::NX),
+                false,
+            )
+            .await
+            .map_err(|e| StoreError::Cache(e.to_string()))?;
+        Ok(res.is_some())
+    }
+
+    /// Drop the pending-approvals set — called when the loop transitions
+    /// out of `AwaitingApproval` (resumed, completed, or failed). Failure
+    /// to clear is non-fatal; the TTL eventually reaps the key.
+    pub async fn clear_pending_approvals(&self, thread_id: ThreadId) -> Result<(), StoreError> {
+        let _: i64 = self
+            .pool
+            .del(pending_approvals_key(thread_id))
+            .await
+            .map_err(|e| StoreError::Cache(e.to_string()))?;
+        Ok(())
+    }
 }
 
 fn claim_key(thread_id: ThreadId) -> String {
@@ -190,4 +295,16 @@ fn claim_key(thread_id: ThreadId) -> String {
 
 fn loop_state_key(thread_id: ThreadId) -> String {
     format!("elena:thread:loop:{thread_id}")
+}
+
+fn pending_approvals_key(thread_id: ThreadId) -> String {
+    format!("elena:thread:pending_approvals:{thread_id}")
+}
+
+fn work_request_key(request_id: RequestId) -> String {
+    format!("elena:wr:{request_id}")
+}
+
+fn event_offset_key(thread_id: ThreadId) -> String {
+    format!("elena:thread:event_offset:{thread_id}")
 }

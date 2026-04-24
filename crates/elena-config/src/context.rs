@@ -1,4 +1,4 @@
-//! Context-building configuration (Phase 4).
+//! Context-building configuration.
 //!
 //! Controls the embedding model location, retrieval parameters, and when to
 //! fall back to on-demand LLM summarization for very long threads.
@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-/// Phase-4 context-management settings.
+/// Context-management settings.
 ///
 /// Both model paths are optional: when either is `None`, [`elena-context`]
 /// installs a null embedder and `build_context` degrades to a plain recency

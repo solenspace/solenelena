@@ -39,8 +39,9 @@ pub struct DefaultsConfig {
 
     /// How many recent messages to include when building the LLM context.
     ///
-    /// Phase 3 is a simple recency window; Phase 4 replaces this with
-    /// embedding-based retrieval.
+    /// The simple recency-window context builder honors this; the
+    /// `elena-context` retrieval path uses token-budget-driven packing
+    /// instead.
     #[serde(default = "default_context_window_messages")]
     pub context_window_messages: u32,
 
@@ -102,6 +103,14 @@ pub struct TierEntry {
     pub provider: String,
     /// Model identifier (provider-specific wire name).
     pub model: ModelId,
+    /// C12 — Hard cap on `max_tokens` the request builder may send for
+    /// this model. Providers reject 400 when the request asks for more
+    /// output tokens than the model can produce; clamping here keeps a
+    /// loose `state.max_tokens_per_turn` from turning into a turn
+    /// failure. `None` (the default for legacy configs) skips the
+    /// clamp.
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
 }
 
 impl Default for TierModels {
@@ -115,13 +124,21 @@ impl Default for TierModels {
 }
 
 fn default_fast_tier() -> TierEntry {
-    TierEntry { provider: "anthropic".into(), model: default_fast_model() }
+    TierEntry { provider: "anthropic".into(), model: default_fast_model(), max_output_tokens: None }
 }
 fn default_standard_tier() -> TierEntry {
-    TierEntry { provider: "anthropic".into(), model: default_standard_model() }
+    TierEntry {
+        provider: "anthropic".into(),
+        model: default_standard_model(),
+        max_output_tokens: None,
+    }
 }
 fn default_premium_tier() -> TierEntry {
-    TierEntry { provider: "anthropic".into(), model: default_premium_model() }
+    TierEntry {
+        provider: "anthropic".into(),
+        model: default_premium_model(),
+        max_output_tokens: None,
+    }
 }
 
 fn default_fast_model() -> ModelId {

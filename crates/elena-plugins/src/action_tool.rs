@@ -21,7 +21,9 @@ use serde_json::Value;
 use tonic::Code;
 use tracing::{debug, warn};
 
-use crate::{client::PluginClient, health::HEALTH_DOWN, id::PluginId, proto::pb};
+use crate::{
+    client::PluginClient, embedded::PluginBackend, health::HEALTH_DOWN, id::PluginId, proto::pb,
+};
 
 /// F2 — maximum tool-result body size before truncation, in bytes.
 /// 200 KiB is enough for typical paginated REST responses but small
@@ -53,6 +55,12 @@ pub fn truncate_tool_result(body: String) -> (String, bool) {
 }
 
 /// One callable plugin action surfaced as a Rust [`Tool`].
+///
+/// X7 — `backend` is either `Remote(PluginClient)` (gRPC dial) or
+/// `Embedded(EmbeddedExecutor)` (direct in-process call). The execute
+/// path drains the same `BoxStream<PluginResponse>` for either
+/// variant — connectors see the same `tonic::Request` shape, the
+/// only difference is whether the bytes traverse a socket.
 #[derive(Debug)]
 pub struct PluginActionTool {
     plugin_id: PluginId,
@@ -61,13 +69,14 @@ pub struct PluginActionTool {
     description: String,
     input_schema: Value,
     is_read_only: bool,
-    client: Arc<PluginClient>,
+    backend: Arc<PluginBackend>,
     execute_timeout: Duration,
     health: Option<Arc<AtomicU8>>,
 }
 
 impl PluginActionTool {
-    /// Build a new bridge for the given action.
+    /// Build a new bridge for the given action against a specific
+    /// backend (remote gRPC or embedded in-process).
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -76,7 +85,7 @@ impl PluginActionTool {
         description: String,
         input_schema: Value,
         is_read_only: bool,
-        client: Arc<PluginClient>,
+        backend: Arc<PluginBackend>,
         execute_timeout: Duration,
         health: Option<Arc<AtomicU8>>,
     ) -> Self {
@@ -88,10 +97,36 @@ impl PluginActionTool {
             description,
             input_schema,
             is_read_only,
-            client,
+            backend,
             execute_timeout,
             health,
         }
+    }
+
+    /// Compatibility constructor for the existing remote-gRPC path.
+    /// Wraps the supplied `PluginClient` in `PluginBackend::Remote`.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn remote(
+        plugin_id: PluginId,
+        action_name: String,
+        description: String,
+        input_schema: Value,
+        is_read_only: bool,
+        client: Arc<PluginClient>,
+        execute_timeout: Duration,
+        health: Option<Arc<AtomicU8>>,
+    ) -> Self {
+        Self::new(
+            plugin_id,
+            action_name,
+            description,
+            input_schema,
+            is_read_only,
+            Arc::new(PluginBackend::Remote(client)),
+            execute_timeout,
+            health,
+        )
     }
 
     /// The synthesised tool name visible to the LLM (`{plugin_id}_{action}`).
@@ -123,6 +158,7 @@ impl PluginActionTool {
 }
 
 #[async_trait]
+#[allow(clippy::too_many_lines)]
 impl Tool for PluginActionTool {
     fn name(&self) -> &str {
         &self.tool_name
@@ -171,8 +207,19 @@ impl Tool for PluginActionTool {
             }
         }
 
-        let mut rpc = self.client.rpc();
-        let exec_call = async { rpc.execute(request).await.map(tonic::Response::into_inner) };
+        // X7 — dispatch to either the gRPC client or the embedded
+        // executor. Both produce a `BoxStream<Result<PluginResponse,
+        // tonic::Status>>`, so the drain loop below is shared.
+        let exec_call = async {
+            match self.backend.as_ref() {
+                PluginBackend::Remote(client) => client
+                    .rpc()
+                    .execute(request)
+                    .await
+                    .map(|r| futures::StreamExt::boxed(r.into_inner())),
+                PluginBackend::Embedded(executor) => executor.execute(request).await,
+            }
+        };
 
         // Race the call against ctx.cancel.
         let mut stream = tokio::select! {
@@ -197,9 +244,9 @@ impl Tool for PluginActionTool {
                     let timeout_ms = u64::try_from(self.execute_timeout.as_millis()).unwrap_or(u64::MAX);
                     return Err(ToolError::Timeout { timeout_ms });
                 }
-                msg = stream.message() => match msg {
-                    Ok(None) => break,
-                    Ok(Some(resp)) => match resp.payload {
+                msg = futures::StreamExt::next(&mut stream) => match msg {
+                    None => break,
+                    Some(Ok(resp)) => match resp.payload {
                         Some(pb::plugin_response::Payload::Progress(p)) => {
                             let data: Value = if p.data_json.is_empty() {
                                 Value::Null
@@ -240,7 +287,7 @@ impl Tool for PluginActionTool {
                                 "plugin sent PluginResponse without payload; ignoring");
                         }
                     },
-                    Err(status) => return Err(self.map_status(&status)),
+                    Some(Err(status)) => return Err(self.map_status(&status)),
                 }
             }
         }
@@ -396,6 +443,7 @@ mod tests {
             permissions: PermissionSet::default(),
             budget: BudgetLimits::default(),
             tier: TenantTier::Pro,
+            plan: None,
             metadata: HashMap::new(),
         };
         let ctx = ToolContext {
@@ -410,7 +458,7 @@ mod tests {
     }
 
     fn build_tool(client: Arc<PluginClient>, timeout: Duration) -> PluginActionTool {
-        PluginActionTool::new(
+        PluginActionTool::remote(
             PluginId::new("echo").unwrap(),
             "reverse".into(),
             "Reverses a string.".into(),

@@ -18,26 +18,47 @@
 //! method takes a `TenantId` parameter.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng, rand_core::RngCore};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use elena_types::{StoreError, TenantId};
+use moka::future::Cache;
 use sqlx::{PgPool, Row};
 
 use crate::sql_error::classify_sqlx;
 
+/// S8 — TTL on the per-`(tenant, plugin)` decrypted credential cache.
+/// Short enough that an admin credential rotation is reflected within
+/// 60 seconds without an explicit invalidation hop. The
+/// admin route layer can also call [`TenantCredentialsStore::invalidate`]
+/// to flush a specific entry on PUT/DELETE for instant effect.
+const CRED_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// Reasonable upper bound on entries kept in memory. At ~5KB per
+/// decrypted map (slack token + a couple of fields), this caps the
+/// cache's RAM footprint at ~5MB even on a multi-tenant pod.
+const CRED_CACHE_CAPACITY: u64 = 1_000;
+
 /// Length of the AES-GCM nonce in bytes. 96 bits is the AES-GCM standard.
 const NONCE_LEN: usize = 12;
+
+/// Concrete shape of the in-process decrypt cache. Aliased so the
+/// struct field type fits on one line (`clippy::type_complexity`).
+type CredCache = Cache<(TenantId, String), Arc<BTreeMap<String, String>>>;
 
 /// CRUD over `tenant_credentials` with envelope encryption.
 ///
 /// Cloning is cheap — the master key is wrapped in `Arc`-equivalent
-/// (`Aes256Gcm` is `Clone`). The pool is also `Clone`able.
+/// (`Aes256Gcm` is `Clone`). The pool is also `Clone`able. The
+/// decrypt cache is `moka` `Cache` — already `Arc`-shaped internally.
 #[derive(Clone)]
 pub struct TenantCredentialsStore {
     pool: PgPool,
     cipher: Aes256Gcm,
+    cache: Arc<CredCache>,
 }
 
 impl std::fmt::Debug for TenantCredentialsStore {
@@ -56,7 +77,10 @@ impl TenantCredentialsStore {
     #[must_use]
     pub fn new(pool: PgPool, master_key: [u8; 32]) -> Self {
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&master_key));
-        Self { pool, cipher }
+        let cache = Arc::new(
+            Cache::builder().max_capacity(CRED_CACHE_CAPACITY).time_to_live(CRED_CACHE_TTL).build(),
+        );
+        Self { pool, cipher, cache }
     }
 
     /// Build a store from `ELENA_CREDENTIAL_MASTER_KEY`.
@@ -110,6 +134,9 @@ impl TenantCredentialsStore {
         .execute(&self.pool)
         .await
         .map_err(classify_sqlx)?;
+        // S8 — flush the in-process cache so the next get_decrypted on
+        // this same pod sees the new ciphertext.
+        self.invalidate(tenant_id, plugin_id).await;
         Ok(())
     }
 
@@ -119,7 +146,35 @@ impl TenantCredentialsStore {
     /// to env defaults in that case. Returns a hard error only on decrypt
     /// failure (e.g. the master key was rotated and old rows are now
     /// unreadable).
+    ///
+    /// S8 — wrapped in a `moka` cache with `CRED_CACHE_TTL` TTL.
+    /// Steady-state lookups skip Postgres + AES-GCM entirely; an admin
+    /// rotation surfaces within the TTL window or instantly when the
+    /// admin route layer calls [`Self::invalidate`].
     pub async fn get_decrypted(
+        &self,
+        tenant_id: TenantId,
+        plugin_id: &str,
+    ) -> Result<BTreeMap<String, String>, StoreError> {
+        let key = (tenant_id, plugin_id.to_owned());
+        if let Some(cached) = self.cache.get(&key).await {
+            return Ok((*cached).clone());
+        }
+        let fresh = self.get_decrypted_uncached(tenant_id, plugin_id).await?;
+        let arc = Arc::new(fresh.clone());
+        self.cache.insert(key, arc).await;
+        Ok(fresh)
+    }
+
+    /// S8 — drop the cached entry for `(tenant, plugin)`. Called by
+    /// the admin PUT/DELETE credential routes so a rotation takes
+    /// effect on the next worker dispatch instead of the next
+    /// `CRED_CACHE_TTL` window.
+    pub async fn invalidate(&self, tenant_id: TenantId, plugin_id: &str) {
+        self.cache.invalidate(&(tenant_id, plugin_id.to_owned())).await;
+    }
+
+    async fn get_decrypted_uncached(
         &self,
         tenant_id: TenantId,
         plugin_id: &str,
@@ -165,6 +220,9 @@ impl TenantCredentialsStore {
                 .execute(&self.pool)
                 .await
                 .map_err(classify_sqlx)?;
+        // S8 — flush local cache so a re-get returns the empty map
+        // (env-default fallback) instead of the freshly-deleted row.
+        self.invalidate(tenant_id, plugin_id).await;
         Ok(result.rows_affected())
     }
 

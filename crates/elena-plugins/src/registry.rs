@@ -97,7 +97,7 @@ impl PluginRegistry {
             }
         }
 
-        // Phase-7 schema-drift check. On re-registration, refuse if any
+        // Schema-drift check. On re-registration, refuse if any
         // action's input schema narrowed vs the previous revision —
         // callers would then emit inputs the sidecar rejects. Widening
         // (adding optional fields) is allowed; narrowing is not.
@@ -121,13 +121,14 @@ impl PluginRegistry {
         // Mark Up immediately since `fetch_manifest` succeeded.
         gauge.store(HEALTH_UP, Ordering::Relaxed);
 
-        // Synthesise + register each action-tool. Re-registrations with the
-        // same plugin id overwrite via `ToolRegistry::register_arc`'s
-        // last-write-wins semantics, which is correct as long as the same
-        // action set is re-advertised. Phase-6 connectors don't shrink their
-        // action set at runtime; Phase-7 adds explicit removal when it does.
+        // Synthesise + register each action-tool. Re-registrations with
+        // the same plugin id overwrite via `ToolRegistry::register_arc`'s
+        // last-write-wins semantics, which is correct as long as the
+        // same action set is re-advertised. Connectors don't shrink
+        // their action set at runtime; explicit removal is not yet
+        // supported here.
         for action in &manifest.actions {
-            let tool = PluginActionTool::new(
+            let tool = PluginActionTool::remote(
                 plugin_id.clone(),
                 action.name.clone(),
                 action.description.clone(),
@@ -148,6 +149,60 @@ impl PluginRegistry {
               "plugin registered");
 
         self.ensure_monitor_started();
+        Ok(plugin_id)
+    }
+
+    /// X7 — Register an in-process embedded plugin (no gRPC dial).
+    ///
+    /// Calls the executor's `manifest()` to discover actions, then
+    /// installs one `PluginActionTool` per action wired to
+    /// `PluginBackend::Embedded(executor)`. The connector code runs
+    /// in the same tokio runtime as the loop — no socket round-trip,
+    /// no tonic server.
+    ///
+    /// Embedded plugins skip the background health monitor: an
+    /// in-process connector that's broken means the process is
+    /// broken, and there's no socket to drop.
+    pub async fn register_embedded(
+        &self,
+        executor: Arc<dyn crate::embedded::EmbeddedExecutor>,
+    ) -> Result<PluginId, PluginError> {
+        let wire_manifest = executor.manifest().await.map_err(|s| PluginError::Manifest {
+            plugin_id: "<unknown>".to_owned(),
+            reason: s.message().to_owned(),
+        })?;
+        let manifest = PluginManifest::from_wire(wire_manifest)?;
+        let plugin_id = manifest.id.clone();
+
+        // Same name-collision check as the remote path.
+        for action in &manifest.actions {
+            let synthesised = manifest.tool_name_for(&action.name);
+            for entry in self.manifests.iter() {
+                if entry.key() == &plugin_id {
+                    continue;
+                }
+                if Self::tool_name_owned_by(entry.value(), &synthesised) {
+                    return Err(PluginError::NameCollision { tool_name: synthesised });
+                }
+            }
+        }
+
+        let backend = Arc::new(crate::embedded::PluginBackend::Embedded(executor));
+        for action in &manifest.actions {
+            let tool = PluginActionTool::new(
+                plugin_id.clone(),
+                action.name.clone(),
+                action.description.clone(),
+                action.input_schema.clone(),
+                action.is_read_only,
+                Arc::clone(&backend),
+                self.execute_timeout,
+                None, // no health gauge for embedded
+            );
+            self.tools.register_arc(Arc::new(tool));
+        }
+        self.manifests.insert(plugin_id.clone(), manifest);
+        info!(plugin = %plugin_id, "embedded plugin registered (in-process, no gRPC)");
         Ok(plugin_id)
     }
 
@@ -224,10 +279,10 @@ impl PluginRegistry {
 /// Return `Some(reason)` if `new` narrows `old` — i.e. the new schema
 /// would reject inputs that the old schema accepted.
 ///
-/// The check is deliberately conservative for Phase 7: it flags the two
-/// narrowing patterns that matter for LLM-emitted tool args:
-/// (a) properties removed outright, (b) previously-optional properties
-/// marked required. Everything else (including type-tightening) passes
+/// The check is deliberately conservative: it flags the two narrowing
+/// patterns that matter for LLM-emitted tool args: (a) properties
+/// removed outright, (b) previously-optional properties marked
+/// required. Everything else (including type-tightening) passes
 /// through; richer structural drift lands in v1.0.x.
 fn schema_narrowed(old: &serde_json::Value, new: &serde_json::Value) -> Option<String> {
     let old_props = old.get("properties").and_then(|p| p.as_object())?;

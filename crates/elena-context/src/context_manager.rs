@@ -12,9 +12,9 @@
 //!   on that happening.
 //!
 //! Summarization for 200+ turn histories is a separate step (see
-//! `summarize::Summarizer`) that the manager optionally invokes. Phase 4
-//! ships the hook; the default manager leaves it as a no-op summarizer so
-//! behavior is deterministic in tests.
+//! `summarize::Summarizer`) that the manager optionally invokes. The
+//! hook lives here; the default manager leaves it as a no-op summarizer
+//! so behavior is deterministic in tests.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -153,9 +153,10 @@ impl ContextManager {
     }
 }
 
-/// Filter out rows that the LLM shouldn't see (tombstones, internal system
-/// notices, summaries). Mirrors the Phase-3 `context_builder` rule so Phase
-/// 4's retrieval path doesn't accidentally widen what's shown.
+/// Filter out rows that the LLM shouldn't see (tombstones, internal
+/// system notices, summaries). Mirrors the recency-window
+/// `context_builder` rule so the retrieval path doesn't accidentally
+/// widen what's shown.
 fn filter_visible(messages: Vec<Message>) -> Vec<Message> {
     use elena_types::MessageKind;
     messages

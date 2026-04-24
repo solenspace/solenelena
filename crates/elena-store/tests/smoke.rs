@@ -10,6 +10,8 @@
 //! `--test-threads=1` avoids container port contention on CI runners with
 //! limited Docker socket throughput; not strictly required otherwise.
 
+// B1.6 — soak deprecated TenantTier warnings until the type is removed.
+#![allow(deprecated)]
 #![cfg(test)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -94,6 +96,13 @@ fn tenant_record(id: TenantId) -> TenantRecord {
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn migrations_are_idempotent() {
+    let h = start_harness().await;
+    h.store.run_migrations().await.expect("second migrate");
+    h.store.run_migrations().await.expect("third migrate");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

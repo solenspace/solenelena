@@ -49,8 +49,8 @@ pub struct Usage {
 
     /// Heterogeneous per-iteration records (e.g., advisor sub-requests).
     ///
-    /// Left as unstructured JSON in Phase 1. Phase 2 (`elena-llm`) will give
-    /// this a strongly-typed shape once the call sites that produce iterations
+    /// Left as unstructured JSON. `elena-llm` will give this a
+    /// strongly-typed shape once the call sites that produce iterations
     /// are ported.
     #[serde(default)]
     pub iterations: Vec<serde_json::Value>,

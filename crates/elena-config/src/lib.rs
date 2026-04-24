@@ -11,6 +11,10 @@
 //! accidentally dump secrets. Inspect values explicitly via
 //! [`secrecy::ExposeSecret`] at the use site.
 
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 #![warn(missing_docs)]
 #![cfg_attr(
     test,
@@ -67,21 +71,19 @@ pub struct ElenaConfig {
     /// Anthropic LLM client settings (legacy, single-provider path).
     ///
     /// Populated by `ELENA_ANTHROPIC__*` env vars and kept for backward
-    /// compatibility with Phase 2–5 callers. New deployments should prefer
-    /// [`ProvidersConfig`] which supports Anthropic + OpenAI-compatible
-    /// providers side by side.
+    /// compatibility with older single-provider callers. New deployments
+    /// should prefer [`ProvidersConfig`] which supports Anthropic +
+    /// OpenAI-compatible providers side by side.
     #[serde(default)]
     pub anthropic: Option<AnthropicConfig>,
 
-    /// Phase-6.5: multi-provider LLM configuration (Anthropic +
-    /// OpenAI-compatible).
+    /// Multi-provider LLM configuration (Anthropic + OpenAI-compatible).
     #[serde(default)]
     pub providers: ProvidersConfig,
 
-    /// Phase-7: per-tenant + per-provider + per-plugin rate limits.
-    /// Defaults to unlimited so existing deployments don't start
-    /// rejecting requests after an upgrade; operators opt in via env or
-    /// TOML.
+    /// Per-tenant + per-provider + per-plugin rate limits. Defaults to
+    /// unlimited so existing deployments don't start rejecting requests
+    /// after an upgrade; operators opt in via env or TOML.
     #[serde(default)]
     pub rate_limits: RateLimitsConfig,
 
@@ -97,11 +99,11 @@ pub struct ElenaConfig {
     #[serde(default)]
     pub defaults: DefaultsConfig,
 
-    /// Phase-4 context / retrieval settings.
+    /// Context / retrieval settings.
     #[serde(default)]
     pub context: ContextConfig,
 
-    /// Phase-4 router settings.
+    /// Router settings.
     #[serde(default)]
     pub router: RouterConfig,
 }

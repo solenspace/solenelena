@@ -11,9 +11,30 @@ use elena_types::{
     ContentBlock, Message, MessageId, MessageKind, Role, StoreError, TenantId, ThreadId, UserId,
     WorkspaceId,
 };
-use sqlx::{PgPool, Row, postgres::PgRow};
+use sqlx::{PgPool, QueryBuilder, Row, postgres::PgRow};
 
 use crate::sql_error::{classify_serde, classify_sqlx};
+
+/// X3 — Lightweight per-message metadata projection. Skips
+/// `content` and `kind`-payload deserialization, so callers that only
+/// care about role / kind-tag / parent / timestamp avoid hauling the
+/// full JSONB content across the wire and through serde.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageSummary {
+    /// Stable message id.
+    pub id: MessageId,
+    /// Optional parent message id (threading).
+    pub parent_id: Option<MessageId>,
+    /// Speaker role.
+    pub role: Role,
+    /// Discriminator tag of [`MessageKind`] (e.g. `"user"`,
+    /// `"assistant"`, `"tool_result"`). Used by callers that only
+    /// need to know "was this an assistant turn" without inspecting
+    /// fields like `stop_reason`.
+    pub kind_tag: String,
+    /// When the row was created.
+    pub created_at: DateTime<Utc>,
+}
 
 /// Handle to the thread/message persistence layer.
 #[derive(Debug, Clone)]
@@ -101,6 +122,56 @@ impl ThreadStore {
         Ok(())
     }
 
+    /// X10 — Bulk-insert several messages from the same thread/tenant.
+    ///
+    /// Used by the loop's tool-execution phase to commit every
+    /// `tool_result` row from one batch in a single round-trip rather
+    /// than N. Caller guarantees all messages share the same `tenant_id`
+    /// and `thread_id`; if not, the touched-thread UPDATE may pick the
+    /// wrong row's timestamp (this is a "fast path for the common
+    /// shape" rather than a fully general bulk insert).
+    ///
+    /// No-op for an empty slice.
+    pub async fn append_messages_bulk(&self, msgs: &[Message]) -> Result<(), StoreError> {
+        let Some(first) = msgs.first() else { return Ok(()) };
+        let mut qb = QueryBuilder::<sqlx::Postgres>::new(
+            "INSERT INTO messages (id, thread_id, tenant_id, parent_id, role, kind, content, token_count, created_at) ",
+        );
+        // Pre-serialize each message's JSONB columns into owned values
+        // to satisfy QueryBuilder's borrow shape.
+        let mut prepared: Vec<(serde_json::Value, serde_json::Value, &'static str)> =
+            Vec::with_capacity(msgs.len());
+        for msg in msgs {
+            let kind_json = serde_json::to_value(&msg.kind).map_err(|e| classify_serde(&e))?;
+            let content_json =
+                serde_json::to_value(&msg.content).map_err(|e| classify_serde(&e))?;
+            prepared.push((kind_json, content_json, role_str(msg.role)));
+        }
+        qb.push_values(msgs.iter().zip(prepared.iter()), |mut b, (msg, (k, c, role))| {
+            b.push_bind(msg.id.as_uuid())
+                .push_bind(msg.thread_id.as_uuid())
+                .push_bind(msg.tenant_id.as_uuid())
+                .push_bind(msg.parent_id.map(|id| id.as_uuid()))
+                .push_bind(*role)
+                .push_bind(k)
+                .push_bind(c)
+                .push_bind(msg.token_count.map(|n| i32::try_from(n).unwrap_or(i32::MAX)))
+                .push_bind(msg.created_at);
+        });
+        qb.build().execute(&self.pool).await.map_err(classify_sqlx)?;
+
+        // Single thread-touch using the latest message's timestamp.
+        let latest = msgs.iter().map(|m| m.created_at).max().unwrap_or(first.created_at);
+        sqlx::query("UPDATE threads SET last_message_at = $1 WHERE id = $2 AND tenant_id = $3")
+            .bind(latest)
+            .bind(first.thread_id.as_uuid())
+            .bind(first.tenant_id.as_uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(classify_sqlx)?;
+        Ok(())
+    }
+
     /// Fetch a single message by ID, enforcing tenant isolation.
     ///
     /// Returns [`StoreError::MessageNotFound`] if the row doesn't exist, or
@@ -180,12 +251,45 @@ impl ThreadStore {
         rows.iter().map(row_to_message).collect()
     }
 
+    /// X3 — Lightweight per-message metadata, no content blocks.
+    ///
+    /// Returns `MessageSummary` rows in created-at ascending order so
+    /// callers like `latest_assistant_message_id` walk the list in
+    /// reverse and pick the most recent assistant. Reads only the
+    /// columns it needs (`id`, `role`, `kind`, `parent_id`, `created_at`), so a
+    /// 100-turn thread costs ~10× less per-row work than the full
+    /// `list_messages`.
+    pub async fn list_message_summaries(
+        &self,
+        tenant_id: TenantId,
+        thread_id: ThreadId,
+        limit: u32,
+    ) -> Result<Vec<MessageSummary>, StoreError> {
+        let capped_limit = i64::from(limit.min(1_000));
+        let rows = sqlx::query(
+            "SELECT id, parent_id, role, kind, created_at
+             FROM messages
+             WHERE tenant_id = $1 AND thread_id = $2
+             ORDER BY created_at ASC
+             LIMIT $3",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(thread_id.as_uuid())
+        .bind(capped_limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(classify_sqlx)?;
+
+        rows.iter().map(row_to_summary).collect()
+    }
+
     /// Append a message, silently ignoring a primary-key conflict.
     ///
-    /// Phase 5 uses this from the worker: NATS `JetStream` has at-least-once
-    /// semantics, so the same [`WorkRequest`](elena_types::WorkRequest) may
-    /// be redelivered after a worker crash. Stamping the message with a
-    /// client-supplied ID + inserting idempotently makes the retry safe.
+    /// Used from the worker: NATS `JetStream` has at-least-once
+    /// semantics, so the same [`WorkRequest`](elena_types::WorkRequest)
+    /// may be redelivered after a worker crash. Stamping the message
+    /// with a client-supplied ID + inserting idempotently makes the
+    /// retry safe.
     ///
     /// Returns `true` if the row was newly inserted, `false` if a row with
     /// the same ID already existed.
@@ -254,9 +358,10 @@ impl ThreadStore {
 
     /// Find messages in a thread similar to the given embedding.
     ///
-    /// Phase 1 always returns an empty vector — embeddings are written as
-    /// `NULL` until Phase 4 (`elena-memory`) populates them. The API is
-    /// exposed now so callers can integrate against the stable signature.
+    /// Currently always returns an empty vector — message-level
+    /// embeddings are written as `NULL` at this layer; episodic recall
+    /// lives in `elena-memory`. The API is exposed so callers can
+    /// integrate against the stable signature.
     pub async fn similar_messages(
         &self,
         tenant_id: TenantId,
@@ -331,6 +436,27 @@ fn row_to_message(row: &PgRow) -> Result<Message, StoreError> {
         kind,
         content,
         token_count: token_count.and_then(|c| u32::try_from(c).ok()),
+        created_at,
+    })
+}
+
+/// X3 — Decode the lightweight summary projection. Only reads the
+/// `kind` JSONB to extract its top-level `type` discriminator string,
+/// so the heavy `MessageKind` deserialize is skipped.
+fn row_to_summary(row: &PgRow) -> Result<MessageSummary, StoreError> {
+    let id: uuid::Uuid = row.try_get("id").map_err(classify_sqlx)?;
+    let parent_id: Option<uuid::Uuid> = row.try_get("parent_id").map_err(classify_sqlx)?;
+    let role_str_val: String = row.try_get("role").map_err(classify_sqlx)?;
+    let kind_json: serde_json::Value = row.try_get("kind").map_err(classify_sqlx)?;
+    let created_at: DateTime<Utc> = row.try_get("created_at").map_err(classify_sqlx)?;
+
+    let kind_tag = kind_json.get("type").and_then(|v| v.as_str()).unwrap_or("unknown").to_owned();
+
+    Ok(MessageSummary {
+        id: MessageId::from_uuid(id),
+        parent_id: parent_id.map(MessageId::from_uuid),
+        role: role_from_str(&role_str_val)?,
+        kind_tag,
         created_at,
     })
 }

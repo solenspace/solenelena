@@ -1,7 +1,7 @@
 //! NATS `JetStream` consumer running Elena's agentic loop.
 //!
-//! Phase 5. Subscribes to `elena.work.incoming` under the `workers` queue
-//! group and runs every received [`WorkRequest`](elena_types::WorkRequest)
+//! Subscribes to `elena.work.incoming` under the `workers` queue group
+//! and runs every received [`WorkRequest`](elena_types::WorkRequest)
 //! through `elena-core::run_loop`. Every emitted
 //! [`StreamEvent`](elena_types::StreamEvent) is published to
 //! `elena.thread.{id}.events` so any subscribed gateway WebSocket can

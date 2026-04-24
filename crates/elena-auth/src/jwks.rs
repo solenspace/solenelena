@@ -5,8 +5,8 @@
 //! with static-key callers: wrap a single `DecodingKey` in a one-shot
 //! validator via [`JwksValidator::static_key`].
 //!
-//! Phase-7 subset: `RS256` / `ES256` keys with explicit `kid` mapping.
-//! HS\* (shared-secret) stays in `elena-gateway::auth` where it already
+//! Supports `RS256` / `ES256` keys with explicit `kid` mapping. HS\*
+//! (shared-secret) stays in `elena-gateway::auth` where it already
 //! lives — rotating a shared secret is an operator action, not an
 //! in-process refresh.
 

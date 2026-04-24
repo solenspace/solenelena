@@ -20,6 +20,10 @@
 //! - `SIGTERM`/`SIGINT` triggers graceful shutdown — gateway stops
 //!   accepting new sockets and worker drains in-flight loops.
 
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 #![allow(
     clippy::print_stderr,
     clippy::module_name_repetitions,
@@ -32,20 +36,16 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use elena_config::{ElenaConfig, TierEntry, TierModels};
-use elena_context::{ContextManager, ContextManagerOptions, NullEmbedder};
-use elena_core::LoopDeps;
 use elena_gateway::{GatewayConfig, GatewayState, JwtAlgorithm, JwtConfig, build_router};
 use elena_llm::{
-    AnthropicAuth, AnthropicClient, CacheAllowlist, CachePolicy, LlmClient, LlmMultiplexer,
-    OpenAiCompatClient, OpenAiCompatConfig,
+    AnthropicAuth, AnthropicClient, LlmClient, LlmMultiplexer, OpenAiCompatClient,
+    OpenAiCompatConfig,
 };
-use elena_memory::EpisodicMemory;
 use elena_observability::LoopMetrics;
 use elena_plugins::{PluginRegistry, PluginsConfig};
-use elena_router::ModelRouter;
 use elena_store::{DropCallback, Store};
 use elena_tools::ToolRegistry;
-use elena_types::{ModelId, TenantTier};
+use elena_types::ModelId;
 use elena_worker::{WorkerConfig, run_worker};
 use secrecy::SecretString;
 use tokio::net::TcpListener;
@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
     // External gRPC sidecar endpoints — comma-separated URLs in
     // `ELENA_PLUGIN_ENDPOINTS`. Used when a plugin is heavy enough to
     // warrant its own service.
-    let mut plugins_endpoints = std::env::var("ELENA_PLUGIN_ENDPOINTS")
+    let plugins_endpoints = std::env::var("ELENA_PLUGIN_ENDPOINTS")
         .ok()
         .map(|csv| {
             csv.split(',')
@@ -86,40 +86,34 @@ async fn main() -> anyhow::Result<()> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    // In-process embedded sidecars — comma-separated plugin ids in
-    // `ELENA_EMBEDDED_PLUGINS`. Each id spawns a tonic server on a
-    // loopback port; the URL is appended to the endpoints list so the
-    // gateway dials it the same way as an external one. Lets a single
-    // Railway service host dozens of thin REST-wrapper plugins without
-    // a per-plugin Dockerfile or service.
-    let embedded_enabled = elena_embedded_plugins::enabled_from_env();
-    let embedded_urls = elena_embedded_plugins::spawn_embedded(&embedded_enabled).await?;
-    plugins_endpoints.extend(embedded_urls);
-
     let plugins_cfg = PluginsConfig { endpoints: plugins_endpoints, ..PluginsConfig::default() };
     let plugins = Arc::new(PluginRegistry::with_config(tools.clone(), &plugins_cfg));
     if !plugins_cfg.endpoints.is_empty() {
         plugins.register_all(&plugins_cfg).await?;
-        info!(count = plugins.manifests().len(), "plugins registered");
+        info!(count = plugins.manifests().len(), "remote plugins registered");
+    }
+    // X7 — In-process embedded plugins go straight into the registry
+    // via the EmbeddedExecutor path: no loopback ports, no tonic
+    // servers, no gRPC round-trip.
+    let embedded_enabled = elena_embedded_plugins::enabled_from_env();
+    if !embedded_enabled.is_empty() {
+        let count =
+            elena_embedded_plugins::register_embedded_plugins(&embedded_enabled, &plugins).await?;
+        info!(count, "embedded plugins registered (in-process)");
     }
 
-    let context =
-        Arc::new(ContextManager::new(Arc::new(NullEmbedder), ContextManagerOptions::default()));
-    let memory = Arc::new(EpisodicMemory::new(Arc::new(store.episodes.clone())));
-    let router = Arc::new(ModelRouter::new(tier_routing, 2));
-
-    let deps = Arc::new(LoopDeps {
+    // Q5 — LoopDeps assembly extracted into elena_server::bootstrap so
+    // the surviving smokes (and any future caller) get the canonical
+    // shape from one place.
+    let deps = elena_server::build_loop_deps(elena_server::BuildLoopDepsOptions {
         store: store.clone(),
         llm,
-        cache_policy: CachePolicy::new(TenantTier::Pro, CacheAllowlist::default()),
         tools,
-        context,
-        memory,
-        router,
         plugins: Arc::clone(&plugins),
-        rate_limits: Arc::new(cfg.rate_limits.clone()),
         metrics: Arc::clone(&metrics),
-        defaults: Arc::new(cfg.defaults.clone()),
+        max_cascade_escalations: 2,
+        tier_routing,
+        cfg: Arc::new(cfg.clone()),
     });
 
     let listen_addr: SocketAddr = std::env::var("ELENA_LISTEN_ADDR")
@@ -127,17 +121,15 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or("0.0.0.0:8080")
         .parse()
         .map_err(|e| anyhow::anyhow!("ELENA_LISTEN_ADDR is not a valid socket address: {e}"))?;
-    let nats_url = std::env::var("ELENA_NATS_URL")
-        .or_else(|_| std::env::var("NATS_URL"))
-        .map_err(|_| anyhow::anyhow!("ELENA_NATS_URL or NATS_URL is required"))?;
+    let nats_url = read_env_with_legacy("ELENA_NATS_URL", "NATS_URL")
+        .ok_or_else(|| anyhow::anyhow!("ELENA_NATS_URL or NATS_URL is required"))?;
 
     let listener = TcpListener::bind(listen_addr).await?;
     let bound: SocketAddr = listener.local_addr()?;
     info!(%bound, "gateway bound");
 
-    let jwt_secret = std::env::var("ELENA_JWT_SECRET")
-        .or_else(|_| std::env::var("JWT_HS256_SECRET"))
-        .map_err(|_| anyhow::anyhow!("ELENA_JWT_SECRET or JWT_HS256_SECRET is required"))?;
+    let jwt_secret = read_env_with_legacy("ELENA_JWT_SECRET", "JWT_HS256_SECRET")
+        .ok_or_else(|| anyhow::anyhow!("ELENA_JWT_SECRET or JWT_HS256_SECRET is required"))?;
     let gateway_cfg = GatewayConfig {
         listen_addr: bound,
         nats_url: nats_url.clone(),
@@ -152,6 +144,21 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(60),
         },
+        // S6 — CORS allow-list. Operators opt in via
+        // `ELENA_CORS_ALLOW_ORIGINS=https://app.example.com,https://staging.example.com`.
+        // Empty / unset disables the CORS layer (default posture).
+        cors: elena_gateway::CorsConfig {
+            allow_origins: std::env::var("ELENA_CORS_ALLOW_ORIGINS")
+                .ok()
+                .map(|s| {
+                    s.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        },
     };
     let mut gateway_state =
         GatewayState::connect(&gateway_cfg, store.clone(), Arc::clone(&metrics)).await?;
@@ -160,18 +167,29 @@ async fn main() -> anyhow::Result<()> {
     // BFF reads to detect "Slack configured but plugin not loaded" and
     // surface a banner instead of letting the LLM hallucinate.
     gateway_state = gateway_state.with_plugins(Arc::clone(&plugins));
-    // Optional but recommended: lock /admin/v1/* behind a shared
-    // secret. Production deployments must set this; absence is
-    // logged so the operator notices.
+    // S3 — /admin/v1/* must be gated by `ELENA_ADMIN_TOKEN`. Booting
+    // without the token is a hard error in production; setting
+    // `ELENA_ALLOW_OPEN_ADMIN=true` is the explicit dev/smoke override
+    // (the smoke binaries set it in their env).
     match std::env::var("ELENA_ADMIN_TOKEN") {
         Ok(token) if !token.is_empty() => {
             gateway_state = gateway_state.with_admin_token(SecretString::from(token));
             info!("admin API gated by X-Elena-Admin-Token header");
         }
         _ => {
+            let override_set = std::env::var("ELENA_ALLOW_OPEN_ADMIN").is_ok_and(|v| {
+                matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes")
+            });
+            if !override_set {
+                return Err(anyhow::anyhow!(
+                    "ELENA_ADMIN_TOKEN is not set. /admin/v1/* would be exposed without auth. \
+                     Set ELENA_ADMIN_TOKEN, or pass ELENA_ALLOW_OPEN_ADMIN=true to override \
+                     for local dev / smoke runs."
+                ));
+            }
             warn!(
-                "ELENA_ADMIN_TOKEN is not set — /admin/v1/* is exposed without auth. \
-                 Set it in production."
+                "ELENA_ADMIN_TOKEN is unset and ELENA_ALLOW_OPEN_ADMIN=true — /admin/v1/* \
+                 is exposed without auth. Do not run this configuration in production."
             );
         }
     }
@@ -219,6 +237,25 @@ fn init_tracing() {
     tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init();
 }
 
+/// Q13 — Read `primary` first, then `legacy` as a fallback. Emits a
+/// WARN if only the legacy alias is set so operators see the
+/// deprecation in their boot logs and migrate before the legacy alias
+/// is removed.
+fn read_env_with_legacy(primary: &str, legacy: &str) -> Option<String> {
+    if let Ok(v) = std::env::var(primary) {
+        return Some(v);
+    }
+    if let Ok(v) = std::env::var(legacy) {
+        warn!(
+            primary,
+            legacy,
+            "{legacy} is deprecated; set {primary} instead. The legacy alias will be removed in a future release."
+        );
+        return Some(v);
+    }
+    None
+}
+
 fn build_llm(cfg: &ElenaConfig) -> anyhow::Result<(LlmMultiplexer, TierModels)> {
     // The multiplexer's default lookup name is the operator's
     // `providers.default`, so a thread without an explicit `provider`
@@ -243,6 +280,7 @@ fn build_llm(cfg: &ElenaConfig) -> anyhow::Result<(LlmMultiplexer, TierModels)> 
             request_timeout_ms: g.request_timeout_ms,
             connect_timeout_ms: g.connect_timeout_ms,
             max_attempts: g.max_attempts,
+            pool_max_idle_per_host: 64,
         };
         mux.register("groq", Arc::new(OpenAiCompatClient::new("groq", &oa)?) as Arc<dyn LlmClient>);
     }
@@ -253,6 +291,7 @@ fn build_llm(cfg: &ElenaConfig) -> anyhow::Result<(LlmMultiplexer, TierModels)> 
             request_timeout_ms: o.request_timeout_ms,
             connect_timeout_ms: o.connect_timeout_ms,
             max_attempts: o.max_attempts,
+            pool_max_idle_per_host: 64,
         };
         mux.register(
             "openrouter",
@@ -268,9 +307,17 @@ fn build_llm(cfg: &ElenaConfig) -> anyhow::Result<(LlmMultiplexer, TierModels)> 
             anyhow::anyhow!("ELENA_DEFAULT_MODEL is required when [defaults.tiers] is empty")
         })?;
         TierModels {
-            fast: TierEntry { provider: provider.clone(), model: ModelId::new(&model) },
-            standard: TierEntry { provider: provider.clone(), model: ModelId::new(&model) },
-            premium: TierEntry { provider, model: ModelId::new(&model) },
+            fast: TierEntry {
+                provider: provider.clone(),
+                model: ModelId::new(&model),
+                max_output_tokens: None,
+            },
+            standard: TierEntry {
+                provider: provider.clone(),
+                model: ModelId::new(&model),
+                max_output_tokens: None,
+            },
+            premium: TierEntry { provider, model: ModelId::new(&model), max_output_tokens: None },
         }
     };
 

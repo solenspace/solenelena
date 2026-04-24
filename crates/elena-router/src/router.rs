@@ -66,14 +66,20 @@ mod tests {
     fn router() -> ModelRouter {
         ModelRouter::new(
             TierModels {
-                fast: TierEntry { provider: "groq".into(), model: ModelId::new("fast-model") },
+                fast: TierEntry {
+                    provider: "groq".into(),
+                    model: ModelId::new("fast-model"),
+                    max_output_tokens: None,
+                },
                 standard: TierEntry {
                     provider: "anthropic".into(),
                     model: ModelId::new("standard-model"),
+                    max_output_tokens: None,
                 },
                 premium: TierEntry {
                     provider: "anthropic".into(),
                     model: ModelId::new("premium-model"),
+                    max_output_tokens: None,
                 },
             },
             2,

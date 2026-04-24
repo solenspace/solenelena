@@ -1,17 +1,17 @@
 //! Workspace store — per-workspace global instructions and plugin
 //! allow-list.
 //!
-//! A workspace is a grouping of threads under a tenant. In Phase 7 two
-//! pieces of state get attached to it:
+//! A workspace is a grouping of threads under a tenant. Two pieces of
+//! state are attached to it:
 //!
 //! - `global_instructions` — a persistent system-prompt fragment injected
 //!   on every turn in this workspace (Solen's "workspace instructions"
 //!   guardrail).
 //! - `allowed_plugin_ids` — an optional allow-list intersected with the
 //!   tenant's own allow-list to decide which plugins a thread in this
-//!   workspace can call (A4).
+//!   workspace can call.
 //!
-//! The `workspaces` table is additive: pre-Phase-7 threads carry
+//! The `workspaces` table is additive: older threads carry
 //! `workspace_id` values that never had a row here, and the gateway
 //! treats a missing row as "no overrides".
 

@@ -1,4 +1,4 @@
-//! elena-gateway binary — Phase 5 scaffold.
+//! elena-gateway binary scaffold.
 
 #[allow(clippy::print_stderr)]
 fn main() {

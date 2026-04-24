@@ -11,7 +11,7 @@ use crate::state::LoopState;
 /// `messages` is the chronologically-ordered context window from
 /// [`context_builder::fetch_recent_messages`](crate::context_builder::fetch_recent_messages).
 /// `tools` is the registry projection — it's already in Anthropic wire
-/// shape. Phase 3 emits no `tool_choice` (the model decides whether to call
+/// shape. Emits no `tool_choice` (the model decides whether to call
 /// a tool), no thinking budget, and leaves temperature unset.
 #[must_use]
 pub fn build_llm_request(
@@ -56,6 +56,7 @@ mod tests {
             permissions: PermissionSet::default(),
             budget: BudgetLimits::default(),
             tier: TenantTier::Pro,
+            plan: None,
             metadata: std::collections::HashMap::new(),
         }
     }

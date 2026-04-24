@@ -1,0 +1,55 @@
+# Prometheus alerting rules for Elena.
+#
+# Mount under your Prometheus rules directory or import via the Helm
+# chart. Thresholds match the in-code defaults; tune to your traffic
+# profile.
+groups:
+  - name: elena-core
+    rules:
+      # Phase 7 invariant: the bounded mpsc backing PostgresAuditSink
+      # surfaces overflow as elena_audit_drops_total. Any non-zero rate
+      # means we're losing audit events, which is a hard correctness
+      # signal — page on the first one.
+      - alert: ElenaAuditDrops
+        expr: rate(elena_audit_drops_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "elena audit sink dropping events"
+          description: |
+            The audit-event mpsc is overflowing. Worker may be running
+            faster than PostgresAuditSink can flush. Investigate audit
+            volume + DB latency.
+
+      # X5 — JetStream work stream is approaching its 1 GiB cap. NATS
+      # will start rejecting publishes when the cap is hit; the gateway
+      # bubbles publish failures up to clients ("turn never started").
+      - alert: ElenaWorkStreamBytesHigh
+        expr: |
+          (jetstream_stream_bytes{stream_name="elena-work"}
+            / jetstream_stream_max_bytes{stream_name="elena-work"}) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "elena-work JetStream > 80% of max_bytes"
+          description: |
+            Worker may be unable to keep up with publish rate, or a
+            worker outage has built up backlog. Check worker health
+            and `nats stream info elena-work` for consumer lag.
+
+      # Per-tenant rate-limit rejections climbing beyond a baseline
+      # could indicate either an aggressive client or a misconfigured
+      # tenant_rpm. Warn-only; the rate limiter is doing its job.
+      - alert: ElenaRateLimitHigh
+        expr: rate(elena_rate_limit_rejections_total[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "rate-limit rejections > 5/s sustained"
+          description: |
+            Tenants are hitting their RPM or inflight cap. Check whether
+            a single tenant is bursting (kind="tenant_rpm") or whether
+            inflight slots are leaking (kind="tenant_inflight").

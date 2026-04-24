@@ -17,7 +17,6 @@ elena-store          = { workspace = true }
 elena-llm            = { workspace = true }
 elena-tools          = { workspace = true }
 elena-context        = { workspace = true }
-elena-memory         = { workspace = true }
 elena-router         = { workspace = true }
 elena-core           = { workspace = true }
 elena-gateway        = { workspace = true }

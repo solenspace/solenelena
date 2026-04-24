@@ -8,6 +8,8 @@
 //!    disabled (`NullEmbedder`), and to retrieval-augmented ordering when
 //!    enabled (`FakeEmbedder`).
 
+// B1.6 — soak deprecated TenantTier warnings until the type is removed.
+#![allow(deprecated)]
 #![cfg(test)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

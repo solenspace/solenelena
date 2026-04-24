@@ -8,6 +8,8 @@
 //! Run serially — each test creates a fresh harness, and Docker's socket
 //! doesn't love parallel test-container spin-ups.
 
+// B1.6 — soak deprecated TenantTier warnings until the type is removed.
+#![allow(deprecated)]
 #![cfg(test)]
 #![allow(
     clippy::unwrap_used,
@@ -27,10 +29,10 @@ use elena_config::{
     CacheConfig, DefaultsConfig, ElenaConfig, LogFormat, LoggingConfig, PostgresConfig,
     RedisConfig, TierModels,
 };
+use elena_context::EpisodicMemory;
 use elena_context::{ContextManager, ContextManagerOptions, NullEmbedder};
 use elena_core::{LoopState, run_loop};
 use elena_llm::{AnthropicAuth, AnthropicClient, CacheAllowlist, CachePolicy};
-use elena_memory::EpisodicMemory;
 use elena_router::ModelRouter;
 use elena_store::{Store, TenantRecord};
 use elena_tools::{Tool, ToolContext, ToolOutput, ToolRegistry};
@@ -121,6 +123,7 @@ async fn start_harness_with_budget(budget: BudgetLimits, max_turns: u32) -> Harn
         permissions: PermissionSet::default(),
         budget,
         tier: TenantTier::Pro,
+        plan: None,
         metadata: HashMap::new(),
     };
     let record = TenantRecord {
@@ -143,6 +146,7 @@ async fn start_harness_with_budget(budget: BudgetLimits, max_turns: u32) -> Harn
         request_timeout_ms: Some(10_000),
         connect_timeout_ms: 2_000,
         max_attempts: 2,
+        pool_max_idle_per_host: 64,
     };
     let llm =
         AnthropicClient::new(&anthropic_cfg, AnthropicAuth::ApiKey(anthropic_cfg.api_key.clone()))

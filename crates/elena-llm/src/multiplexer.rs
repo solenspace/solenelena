@@ -167,6 +167,7 @@ mod tests {
             permissions: PermissionSet::default(),
             budget: BudgetLimits::default(),
             tier: TenantTier::Pro,
+            plan: None,
             metadata: std::collections::HashMap::new(),
         }
     }

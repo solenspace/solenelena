@@ -1,6 +1,6 @@
 //! Heuristic model-tier routing + reactive cascade escalation.
 //!
-//! Phase 4. Pure-Rust, deterministic, table-testable. No ML model; the
+//! Pure-Rust, deterministic, table-testable. No ML model; the
 //! architecture's target ONNX classifier will slot in later when production
 //! training data exists.
 //!
@@ -13,6 +13,10 @@
 //! - [`ModelRouter::resolve`] — translate a tier to the operator-configured
 //!   [`ModelId`](elena_types::ModelId).
 
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 

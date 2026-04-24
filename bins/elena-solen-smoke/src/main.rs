@@ -30,6 +30,10 @@
 //! messages and Sheets rows are not auto-deleted (operator can clear
 //! the test channel and tracker between runs).
 
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 #![allow(
     clippy::print_stdout,
     clippy::print_stderr,
@@ -51,10 +55,10 @@ use elena_connector_notion::NotionConnector;
 use elena_connector_sheets::SheetsConnector;
 use elena_connector_shopify::ShopifyConnector;
 use elena_connector_slack::SlackConnector;
+use elena_context::EpisodicMemory;
 use elena_context::{ContextManager, ContextManagerOptions, NullEmbedder};
 use elena_gateway::{GatewayConfig, GatewayState, JwtAlgorithm, JwtConfig, build_router};
 use elena_llm::{CacheAllowlist, CachePolicy, LlmClient, OpenAiCompatClient, OpenAiCompatConfig};
-use elena_memory::EpisodicMemory;
 use elena_plugins::{PluginRegistry, PluginsConfig, proto::pb};
 use elena_router::ModelRouter;
 use elena_store::{Store, TenantCredentialsStore};
@@ -269,6 +273,7 @@ async fn run(secrets: Secrets) -> anyhow::Result<()> {
         request_timeout_ms: Some(60_000),
         connect_timeout_ms: 10_000,
         max_attempts: 3,
+        pool_max_idle_per_host: 64,
     };
     let groq_client = Arc::new(OpenAiCompatClient::new("groq", &groq_cfg)?);
     let mut mux = elena_llm::LlmMultiplexer::new("groq");
@@ -277,9 +282,13 @@ async fn run(secrets: Secrets) -> anyhow::Result<()> {
 
     let model = ModelId::new("llama-3.3-70b-versatile");
     let tier_routing = TierModels {
-        fast: TierEntry { provider: "groq".into(), model: model.clone() },
-        standard: TierEntry { provider: "groq".into(), model: model.clone() },
-        premium: TierEntry { provider: "groq".into(), model },
+        fast: TierEntry { provider: "groq".into(), model: model.clone(), max_output_tokens: None },
+        standard: TierEntry {
+            provider: "groq".into(),
+            model: model.clone(),
+            max_output_tokens: None,
+        },
+        premium: TierEntry { provider: "groq".into(), model, max_output_tokens: None },
     };
 
     // ---- Plugin registry ----
@@ -334,6 +343,7 @@ async fn run(secrets: Secrets) -> anyhow::Result<()> {
             audience: "elena-solen-clients".into(),
             leeway_seconds: 60,
         },
+        cors: elena_gateway::CorsConfig::default(),
     };
     let gateway_state =
         GatewayState::connect(&gateway_cfg, store.clone(), Arc::clone(&metrics)).await?;
@@ -565,26 +575,27 @@ async fn run_turn(
         let msg = msg?;
         if let tokio_tungstenite::tungstenite::Message::Text(t) = msg {
             let v: serde_json::Value = serde_json::from_str(&t)?;
-            match v.get("event").and_then(|e| e.as_str()) {
+            let ev = inner_event(&v);
+            match ev.get("event").and_then(|e| e.as_str()) {
                 Some("text_delta") => {
-                    if let Some(d) = v.get("delta").and_then(|v| v.as_str()) {
+                    if let Some(d) = ev.get("delta").and_then(|v| v.as_str()) {
                         print!("{d}");
                         std::io::stdout().flush().ok();
                     }
                 }
                 Some("tool_use") => {
-                    if let Some(name) = v.get("tool_name").and_then(|n| n.as_str()) {
+                    if let Some(name) = ev.get("tool_name").and_then(|n| n.as_str()) {
                         eprintln!("\n      tool_use: {name}");
                     }
                 }
                 Some("tool_result") => {
-                    let name = v.get("tool_name").and_then(|n| n.as_str()).unwrap_or("");
+                    let name = ev.get("tool_name").and_then(|n| n.as_str()).unwrap_or("");
                     if name.starts_with("shopify_") {
                         outcome.shopify = true;
                     } else if name.starts_with("notion_") {
                         outcome.notion = true;
                         // Try to scrape the page id for cleanup.
-                        if let Some(content) = v.get("content").and_then(|c| c.as_str())
+                        if let Some(content) = ev.get("content").and_then(|c| c.as_str())
                             && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content)
                             && let Some(id) = parsed.get("id").and_then(|x| x.as_str())
                         {
@@ -605,6 +616,14 @@ async fn run_turn(
     println!();
     info!(?outcome, "turn complete");
     Ok(outcome)
+}
+
+/// Peel the X4 [`StreamEnvelope`] wrapper if present.
+fn inner_event(v: &serde_json::Value) -> &serde_json::Value {
+    match (v.get("offset"), v.get("event")) {
+        (Some(_), Some(inner)) if inner.is_object() => inner,
+        _ => v,
+    }
 }
 
 async fn spawn_connector<S>(service: S) -> anyhow::Result<SocketAddr>
