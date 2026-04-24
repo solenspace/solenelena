@@ -12,8 +12,8 @@
 //!    money). Read-only calls do not fork the conversation and run
 //!    without prompting.
 //!
-//! The "read-only vs side-effecting" classification is a **name
-//! heuristic** scoped to Phase 7. The plugin manifest in Phase 8+ will
+//! The "read-only vs side-effecting" classification is currently a
+//! **name heuristic**. A future revision of the plugin manifest will
 //! carry an explicit `side_effect: bool` field and this module will
 //! switch to reading it directly.
 

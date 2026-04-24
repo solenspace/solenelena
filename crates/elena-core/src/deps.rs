@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use elena_config::{DefaultsConfig, RateLimitsConfig};
 use elena_context::ContextManager;
+use elena_context::EpisodicMemory;
 use elena_llm::{CachePolicy, LlmClient};
-use elena_memory::EpisodicMemory;
 use elena_observability::LoopMetrics;
 use elena_plugins::PluginRegistry;
 use elena_router::ModelRouter;
@@ -29,20 +29,20 @@ pub struct LoopDeps {
     pub cache_policy: CachePolicy,
     /// Registered tools.
     pub tools: ToolRegistry,
-    /// Phase-4 context builder — embedding + retrieval + packing.
+    /// Context builder — embedding + retrieval + packing.
     pub context: Arc<ContextManager>,
-    /// Phase-4 per-workspace memory.
+    /// Per-workspace memory.
     pub memory: Arc<EpisodicMemory>,
-    /// Phase-4 heuristic model router.
+    /// Heuristic model router.
     pub router: Arc<ModelRouter>,
-    /// Phase-6 plugin registry. Owns gRPC clients, manifests, and the
-    /// background health monitor. Plugin actions register themselves as
-    /// synthetic tools inside `tools`, so the orchestrator sees them as
-    /// ordinary [`elena_tools::Tool`]s.
+    /// Plugin registry. Owns gRPC clients, manifests, and the background
+    /// health monitor. Plugin actions register themselves as synthetic
+    /// tools inside `tools`, so the orchestrator sees them as ordinary
+    /// [`elena_tools::Tool`]s.
     pub plugins: Arc<PluginRegistry>,
-    /// Phase-7 metrics handles (RED counters, histograms). Cheap to clone.
+    /// Metrics handles (RED counters, histograms). Cheap to clone.
     pub metrics: Arc<LoopMetrics>,
-    /// Phase-7 rate-limit policy. Worker dispatch checks per-tenant RPM +
+    /// Rate-limit policy. Worker dispatch checks per-tenant RPM +
     /// inflight before claiming. Defaults to unlimited so existing
     /// deployments don't regress.
     pub rate_limits: Arc<RateLimitsConfig>,

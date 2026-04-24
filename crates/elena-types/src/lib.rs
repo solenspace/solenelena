@@ -10,6 +10,10 @@
 //! Deserialize` so it can cross process boundaries (NATS, gRPC, HTTP) without
 //! adapter layers.
 
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 #![warn(missing_docs)]
 // Tests use `unwrap`/`expect` freely as assertions — they fail fast on setup
 // issues, and re-implementing each as `?` would muddy intent.
@@ -23,6 +27,7 @@ pub mod memory;
 pub mod message;
 pub mod model;
 pub mod permission;
+pub mod plan;
 pub mod stream;
 pub mod tenant;
 pub mod terminal;
@@ -33,8 +38,8 @@ pub use autonomy::{ApprovalDecision, ApprovalVerdict, AutonomyMode, PendingAppro
 pub use cache::{CacheControl, CacheControlKind, CacheScope, CacheTtl};
 pub use error::{ConfigError, ElenaError, LlmApiError, LlmApiErrorKind, StoreError, ToolError};
 pub use id::{
-    EpisodeId, IdParseError, MessageId, PluginId, RequestId, SessionId, TenantId, ThreadId,
-    ToolCallId, UserId, WorkspaceId,
+    EpisodeId, IdParseError, MessageId, PlanAssignmentId, PlanId, PluginId, RequestId, SessionId,
+    TenantId, ThreadId, ToolCallId, UserId, WorkspaceId,
 };
 pub use memory::Outcome;
 pub use message::{
@@ -47,7 +52,8 @@ pub use permission::{
     PermissionRuleSource, PermissionRuleValue, PermissionSet, PermissionUpdate,
     PermissionUpdateDestination,
 };
-pub use stream::StreamEvent;
+pub use plan::{Plan, PlanAssignment, PlanSlug, ResolvedPlan};
+pub use stream::{StreamEnvelope, StreamEvent};
 pub use tenant::{BudgetLimits, TenantContext, TenantTier};
 pub use terminal::Terminal;
 pub use transport::{WorkRequest, WorkRequestKind, subjects};

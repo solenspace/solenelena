@@ -5,8 +5,8 @@
 //! pod restart, network blip) is reconnected transparently by tonic on the
 //! next RPC rather than making Elena carry the bookkeeping.
 //!
-//! Wrapped rather than aliased so that Phase 7 can hang mTLS / metadata
-//! injection / per-tenant auth off it without touching every call site.
+//! Wrapped rather than aliased so that mTLS / metadata injection /
+//! per-tenant auth can hang off it without touching every call site.
 
 use std::time::Duration;
 

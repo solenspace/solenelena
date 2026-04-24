@@ -1,11 +1,15 @@
 //! Agentic loop state machine for Elena.
 //!
-//! Phase 3 surface: [`LoopState`] + [`LoopPhase`] + [`LoopDeps`] and the
+//! Public surface: [`LoopState`] + [`LoopPhase`] + [`LoopDeps`] and the
 //! driver entry points that advance one loop run from `Received` to
 //! `Completed` or `Failed`. Every phase transition commits durable state
 //! (messages to Postgres, checkpoint to Redis) before yielding, so any
 //! worker can resume a thread after a crash.
 
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 

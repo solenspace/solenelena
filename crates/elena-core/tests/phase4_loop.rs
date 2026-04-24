@@ -4,6 +4,8 @@
 //! with wiremock. Exercises retrieval, routing / cascade escalation, and
 //! episodic memory end-to-end.
 
+// B1.6 — soak deprecated TenantTier warnings until the type is removed.
+#![allow(deprecated)]
 #![cfg(test)]
 #![allow(
     clippy::unwrap_used,
@@ -21,10 +23,10 @@ use elena_config::{
     CacheConfig, ContextConfig, DefaultsConfig, ElenaConfig, LogFormat, LoggingConfig,
     PostgresConfig, RedisConfig, RouterConfig, TierModels,
 };
+use elena_context::EpisodicMemory;
 use elena_context::{ContextManager, ContextManagerOptions, Embedder, FakeEmbedder};
 use elena_core::{LoopState, run_loop};
 use elena_llm::{AnthropicAuth, AnthropicClient, CacheAllowlist, CachePolicy};
-use elena_memory::EpisodicMemory;
 use elena_router::ModelRouter;
 use elena_store::{Episode, Store, TenantRecord};
 use elena_tools::ToolRegistry;
@@ -110,6 +112,7 @@ async fn harness(embedder: Arc<dyn Embedder>) -> Harness {
         permissions: PermissionSet::default(),
         budget: BudgetLimits::DEFAULT_PRO,
         tier: TenantTier::Pro,
+        plan: None,
         metadata: HashMap::new(),
     };
     store
@@ -135,6 +138,7 @@ async fn harness(embedder: Arc<dyn Embedder>) -> Harness {
         request_timeout_ms: Some(10_000),
         connect_timeout_ms: 2_000,
         max_attempts: 2,
+        pool_max_idle_per_host: 64,
     };
     let llm =
         AnthropicClient::new(&anthropic_cfg, AnthropicAuth::ApiKey(anthropic_cfg.api_key.clone()))

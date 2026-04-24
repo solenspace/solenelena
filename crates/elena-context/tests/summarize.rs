@@ -1,6 +1,8 @@
 //! Summarizer test — verifies the Anthropic call shape and text extraction
 //! against a wiremock server. No Postgres, no real embedding model.
 
+// B1.6 — soak deprecated TenantTier warnings until the type is removed.
+#![allow(deprecated)]
 #![cfg(test)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -28,6 +30,7 @@ fn tenant() -> TenantContext {
         permissions: PermissionSet::default(),
         budget: BudgetLimits::DEFAULT_PRO,
         tier: TenantTier::Pro,
+        plan: None,
         metadata: std::collections::HashMap::new(),
     }
 }
@@ -102,6 +105,7 @@ async fn summarize_returns_concatenated_text_deltas() {
         request_timeout_ms: Some(5_000),
         connect_timeout_ms: 2_000,
         max_attempts: 2,
+        pool_max_idle_per_host: 64,
     };
     let client = AnthropicClient::new(&cfg, AnthropicAuth::ApiKey(cfg.api_key.clone())).unwrap();
     let sum = Summarizer::new(
@@ -142,6 +146,7 @@ async fn summarize_empty_history_still_issues_one_request() {
         request_timeout_ms: Some(5_000),
         connect_timeout_ms: 2_000,
         max_attempts: 2,
+        pool_max_idle_per_host: 64,
     };
     let client = AnthropicClient::new(&cfg, AnthropicAuth::ApiKey(cfg.api_key.clone())).unwrap();
     let sum = Summarizer::new(

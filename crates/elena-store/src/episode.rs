@@ -1,9 +1,10 @@
 //! [`EpisodeStore`] — per-workspace memory backed by the `episodes` table
 //! with pgvector similarity search.
 //!
-//! The table + HNSW index was provisioned in Phase 1 (`20260417000006_episodes.sql`).
-//! Phase 4 populates it: `insert_episode` writes a row + embedding atomically,
-//! and `similar_episodes` returns the cosine-nearest rows within a workspace.
+//! The table + HNSW index is provisioned by
+//! `20260417000006_episodes.sql`. `insert_episode` writes a row +
+//! embedding atomically, and `similar_episodes` returns the
+//! cosine-nearest rows within a workspace.
 
 use chrono::{DateTime, Utc};
 use elena_types::{EpisodeId, Outcome, StoreError, TenantId, WorkspaceId};

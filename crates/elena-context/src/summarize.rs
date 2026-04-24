@@ -6,9 +6,9 @@
 //! alongside the thread as a [`MessageKind::System`](elena_types::MessageKind::System)
 //! row (compact-boundary) so it survives checkpoint restarts.
 //!
-//! Phase 4 ships the building block. Wiring into [`ContextManager`] is opt-in
-//! — tests + smoke don't need it, and the trigger condition is rare enough
-//! that defaulting off keeps behavior deterministic.
+//! The building block lives here; wiring into [`ContextManager`] is
+//! opt-in — tests + smoke don't need it, and the trigger condition is
+//! rare enough that defaulting off keeps behavior deterministic.
 
 use std::sync::Arc;
 

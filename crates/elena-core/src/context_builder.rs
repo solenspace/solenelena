@@ -1,15 +1,15 @@
-//! Phase-3 context builder — fetch the last-N messages for the LLM turn.
+//! Context builder — fetch the last-N messages for the LLM turn.
 //!
-//! A crude recency window. Phase 4 (`elena-context`) replaces this with
+//! A crude recency window. `elena-context` replaces this with
 //! embedding-based retrieval, tokenization-aware packing, and smart
 //! truncation of old tool-result blocks.
 
 use elena_store::ThreadStore;
 use elena_types::{Message, MessageKind, StoreError, TenantId, ThreadId};
 
-/// Cap used to bound a single read from Postgres. Phase-3 conversations
-/// shouldn't approach this; if they do, Phase 4 retrieval will replace the
-/// bulk read entirely.
+/// Cap used to bound a single read from Postgres. Conversations using
+/// the recency window shouldn't approach this; if they do,
+/// `elena-context` retrieval replaces the bulk read entirely.
 const READ_CAP: u32 = 1_000;
 
 /// Fetch the last `limit` messages in a thread, in chronological order.

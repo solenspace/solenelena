@@ -1,5 +1,5 @@
 //! Wire types shared by [`elena-gateway`] and [`elena-worker`] for the
-//! NATS-bridged distributed runtime (Phase 5).
+//! NATS-bridged distributed runtime.
 //!
 //! Lives in `elena-types` so neither side needs to depend on the other —
 //! the gateway publishes [`WorkRequest`] to [`subjects::WORK_INCOMING`],
@@ -54,15 +54,15 @@ pub struct WorkRequest {
     /// W3C `tracestate` header. Opaque; round-tripped as-is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_state: Option<String>,
-    /// Phase 7 — per-thread autonomy policy pinned for this turn. Gateway
-    /// loads it from the thread's stored mode; worker copies it into
-    /// [`LoopState::autonomy`]. Pre-Phase-7 messages missing this field
-    /// default to [`AutonomyMode::Moderate`].
+    /// Per-thread autonomy policy pinned for this turn. Gateway loads
+    /// it from the thread's stored mode; worker copies it into
+    /// [`LoopState::autonomy`]. Older serialized messages missing this
+    /// field default to [`AutonomyMode::Moderate`].
     #[serde(default)]
     pub autonomy: AutonomyMode,
-    /// Phase 7 — whether this is a fresh user turn or a resume after a
-    /// client posted approvals for a paused loop. Resume requests skip
-    /// the idempotent user-message append.
+    /// Whether this is a fresh user turn or a resume after a client
+    /// posted approvals for a paused loop. Resume requests skip the
+    /// idempotent user-message append.
     #[serde(default)]
     pub kind: WorkRequestKind,
 }
@@ -141,6 +141,7 @@ mod tests {
             permissions: PermissionSet::default(),
             budget: BudgetLimits::DEFAULT_PRO,
             tier: TenantTier::Pro,
+            plan: None,
             metadata: HashMap::new(),
         }
     }

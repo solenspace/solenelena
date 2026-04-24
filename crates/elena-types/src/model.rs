@@ -3,7 +3,7 @@
 //! [`ModelId`] is intentionally opaque — Anthropic, Bedrock, Vertex, and
 //! Azure Foundry all use different model-name conventions (e.g.,
 //! `claude-sonnet-4-6` vs. `anthropic.claude-sonnet-4-6-20260214-v1:0`), and
-//! provider-specific parsing belongs in the LLM client (Phase 2), not here.
+//! provider-specific parsing belongs in the LLM client, not here.
 //!
 //! [`ModelTier`] is the routing-level classification the agentic loop uses.
 

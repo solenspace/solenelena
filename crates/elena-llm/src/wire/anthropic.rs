@@ -1,6 +1,7 @@
-//! Wire-body builder — turns an [`LlmRequest`] into the JSON Anthropic expects.
+//! Anthropic Messages API wire-body builder.
 //!
-//! Key calibrations from the reference TS source:
+//! Anthropic-specific contracts (kept here so OpenAI-compat doesn't
+//! import Anthropic-only assumptions):
 //! - `temperature` is *omitted* (not sent as 1.0) when `thinking` is set.
 //! - `cache_control` markers go on exactly one message-level block (the last
 //!   text block of the last message, via [`CachePolicy::decide_message_marker`])
@@ -8,6 +9,10 @@
 //!   [`CachePolicy::decide_system_marker`]).
 //! - `metadata.user_id` is required and carries a JSON-encoded object with
 //!   tenant/user/workspace/session IDs.
+//!
+//! The OpenAI-compat body builder lives in `crate::openai_compat` (a
+//! private fn beside its caller; smaller surface, no shared abstraction
+//! to maintain).
 
 use elena_types::ContentBlock;
 use serde_json::{Value, json};
@@ -78,8 +83,8 @@ pub fn build_wire_body(req: &LlmRequest, policy: &CachePolicy) -> Value {
 
 /// Serialize the set of beta headers that apply to this request.
 ///
-/// Phase 2 only: `prompt-caching-scope` is the one beta we conditionally
-/// enable (when global scope is active).
+/// `prompt-caching-scope` is the one beta we conditionally enable
+/// (when global scope is active).
 #[must_use]
 pub fn beta_headers(_req: &LlmRequest, policy: &CachePolicy) -> Vec<&'static str> {
     let mut betas = Vec::new();
@@ -187,6 +192,7 @@ mod tests {
             permissions: PermissionSet::default(),
             budget: BudgetLimits::default(),
             tier: TenantTier::Pro,
+            plan: None,
             metadata: std::collections::HashMap::new(),
         }
     }

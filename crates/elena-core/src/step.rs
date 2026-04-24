@@ -22,7 +22,7 @@ use elena_types::{
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, instrument, warn};
 
 use crate::{
     deps::LoopDeps,
@@ -32,8 +32,8 @@ use crate::{
     stream_consumer::{ConsumedStream, consume_stream},
 };
 
-/// How long the loop will wait for client approval before timing out.
-/// Matches the value documented in the Phase 7 plan (Cautious mode).
+/// How long the loop will wait for client approval before timing out
+/// (Cautious mode).
 const APPROVAL_DEADLINE_SECS: i64 = 300;
 
 /// F9 — Approval-deadline check.
@@ -104,6 +104,7 @@ pub async fn step(
 ///    approvals rows, transition to `ExecutingTools` with the remaining
 ///    allowed invocations.
 /// 3. Fewer approvals than pending → park again (client still answering).
+#[instrument(skip(deps, event_tx), fields(tenant = %state.tenant.tenant_id, thread = %state.thread_id, phase = state.phase.tag()))]
 async fn handle_awaiting_approval(
     state: &mut LoopState,
     deps: &LoopDeps,
@@ -247,15 +248,16 @@ fn split_decisions(
     (allowed, denied)
 }
 
+#[instrument(skip(deps, event_tx), fields(tenant = %state.tenant.tenant_id, thread = %state.thread_id, phase = state.phase.tag()))]
 async fn handle_received(
     state: &mut LoopState,
     deps: &LoopDeps,
     event_tx: &mpsc::Sender<StreamEvent>,
 ) -> Result<StepOutcome, ElenaError> {
-    // Phase 4 hook: pull any relevant episodes from the tenant's workspace
-    // and prepend a "prior sessions" preamble to the system prompt. This
-    // happens exactly once (on the first step) and then sticks for the rest
-    // of the loop.
+    // Pull any relevant episodes from the tenant's workspace and
+    // prepend a "prior sessions" preamble to the system prompt. This
+    // happens exactly once (on the first step) and then sticks for the
+    // rest of the loop.
     inject_episodic_preamble(state, deps).await;
 
     emit_phase_change(event_tx, "received", "streaming").await;
@@ -338,13 +340,14 @@ fn first_user_text(messages: &[Message]) -> Option<String> {
     })
 }
 
+#[instrument(skip(deps, event_tx), fields(tenant = %state.tenant.tenant_id, thread = %state.thread_id, phase = state.phase.tag()))]
 async fn handle_streaming(
     state: &mut LoopState,
     deps: &LoopDeps,
     cancel: &CancellationToken,
     event_tx: &mpsc::Sender<StreamEvent>,
 ) -> Result<StepOutcome, ElenaError> {
-    // Phase 4: the query used for retrieval is the most recent user text.
+    // The query used for retrieval is the most recent user text.
     let current_query = latest_user_text(deps, state).await.unwrap_or_default();
 
     // Pick a tier if the caller hasn't yet dictated a specific escalation
@@ -366,11 +369,13 @@ async fn handle_streaming(
         let entry = deps.router.resolve(tier);
         state.model = entry.model;
         state.provider = entry.provider;
+        clamp_max_tokens_to_tier(state, entry.max_output_tokens);
     } else {
         // Cascade already chose — make sure model_id reflects the tier.
         let entry = deps.router.resolve(pinned_tier);
         state.model = entry.model;
         state.provider = entry.provider;
+        clamp_max_tokens_to_tier(state, entry.max_output_tokens);
     }
 
     // Build the context window. `build_context` falls back to a recency
@@ -387,12 +392,14 @@ async fn handle_streaming(
         .await
         .map_err(|e| to_elena_error(&e))?;
 
-    // Phase 7 · A4/A5: resolve the tenant's visible plugin set and
-    // filter the schema list before the model sees it. Built-ins (tools
-    // whose name does not match any registered plugin prefix) always
-    // pass through. Backwards compat: empty allow-lists + no ownership
-    // rows degrades to "every registered tool visible".
-    let schemas = filter_schemas_for_tenant(deps, state).await;
+    // Resolve the tenant's visible plugin set and filter the schema
+    // list before the model sees it. Built-ins (tools whose name does
+    // not match any registered plugin prefix) always pass through.
+    // Backwards compat: empty allow-lists + no ownership rows degrades
+    // to "every registered tool visible". C10 — a policy-DB outage now
+    // fails *closed*: the model proceeds with no tools rather than
+    // briefly seeing tools the tenant shouldn't.
+    let schemas = filter_schemas_for_tenant(deps, state, event_tx).await;
     let req = build_llm_request(state, messages, schemas);
 
     // Stream from the LLM.
@@ -605,10 +612,7 @@ fn to_elena_error(err: &elena_context::ContextError) -> ElenaError {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "SCRUM-103 added an idempotency guard + early-exit path; splitting the helper off would fragment a straight-line transition"
-)]
+#[instrument(skip(deps, event_tx), fields(tenant = %state.tenant.tenant_id, thread = %state.thread_id, phase = state.phase.tag()))]
 async fn handle_executing_tools(
     state: &mut LoopState,
     deps: &LoopDeps,
@@ -616,21 +620,52 @@ async fn handle_executing_tools(
     event_tx: &mpsc::Sender<StreamEvent>,
     remaining: Vec<elena_tools::ToolInvocation>,
 ) -> Result<StepOutcome, ElenaError> {
-    // Idempotency guard. The LLM can re-propose the same `tool_use_id`
-    // after seeing its own `tool_result` — llama-3.3's tool-use
-    // protocol handling is not always clean. Without this filter we
-    // would execute the same Slack post twice (and rack up duplicate
-    // side-effects on every integration).
-    //
-    // Two passes:
-    //   1. Skip any call whose id already has a persisted tool_result
-    //      row on this thread (exact idempotency).
-    //   2. Skip any call whose (tool_name, canonical_input) matches a
-    //      prior *successful* tool result on this thread. This catches
-    //      the moderate-mode loop where the LLM re-proposes the same
-    //      logical action under a fresh `tool_use_id` after approval.
     let thread_exec =
         prior_tool_execution_index(deps, state.tenant.tenant_id, state.thread_id).await?;
+    let fresh = compute_fresh(remaining, &thread_exec);
+    if fresh.is_empty() {
+        // Every call in this batch was a dupe. Force loop termination —
+        // *not* a re-entry into Streaming. If we set
+        // `last_turn_had_tools = true`, PostProcessing would loop back
+        // to Streaming, the LLM would propose the same tool again, the
+        // guard would block it again, and we'd cycle until max_turns.
+        // Setting `last_turn_had_tools = false` instead routes
+        // PostProcessing straight to `Terminal::Completed`.
+        state.pending_tool_calls.clear();
+        state.last_turn_had_tools = false;
+        state.phase = LoopPhase::PostProcessing;
+        emit_phase_change(event_tx, "executing_tools", "post_processing").await;
+        return Ok(StepOutcome::Continue);
+    }
+
+    let parent_id = latest_assistant_message_id(deps, state).await?;
+    let creds_map = resolve_credentials(deps, state, &fresh, event_tx).await;
+    let results = dispatch_batch(deps, state, fresh, creds_map, cancel, event_tx).await;
+    commit_tool_results(deps, state, results, parent_id, event_tx).await?;
+
+    state.pending_tool_calls.clear();
+    state.turn_count = state.turn_count.saturating_add(1);
+    state.phase = LoopPhase::PostProcessing;
+    emit_phase_change(event_tx, "executing_tools", "post_processing").await;
+    Ok(StepOutcome::Continue)
+}
+
+/// Q1 — Step 1 of executing-tools: idempotency filter.
+///
+/// The LLM can re-propose the same `tool_use_id` after seeing its own
+/// `tool_result` — llama-3.3's tool-use protocol is not always clean.
+/// Without this filter we would execute the same Slack post twice.
+///
+/// Two passes:
+///   1. Skip any call whose id already has a persisted `tool_result`
+///      row on this thread (exact idempotency).
+///   2. Skip any call whose (`tool_name`, `canonical_input`) matches a
+///      prior *successful* tool result. This catches the moderate-mode
+///      loop where the LLM re-proposes under a fresh id after approval.
+fn compute_fresh(
+    remaining: Vec<elena_tools::ToolInvocation>,
+    thread_exec: &PriorToolExecIndex,
+) -> Vec<elena_tools::ToolInvocation> {
     let (dupes, fresh): (Vec<_>, Vec<_>) = remaining.into_iter().partition(|c| {
         if thread_exec.ids.contains(&c.id) {
             return true;
@@ -645,43 +680,45 @@ async fn handle_executing_tools(
             "skipping duplicate tool invocation — result already persisted for same id or (name,input)",
         );
     }
-    if fresh.is_empty() {
-        // Every call in this batch was a dupe. Force loop termination —
-        // *not* a re-entry into Streaming. If we set
-        // `last_turn_had_tools = true`, PostProcessing would loop back
-        // to Streaming, the LLM would propose the same tool again, the
-        // guard would block it again, and we'd cycle until max_turns.
-        // Setting `last_turn_had_tools = false` instead routes
-        // PostProcessing straight to `Terminal::Completed`. The user
-        // sees the original `tool_use_start` + `tool_result` + `done` —
-        // the UI's tool pill carries the success story without a
-        // contradictory text response from the LLM.
-        state.pending_tool_calls.clear();
-        state.last_turn_had_tools = false;
-        state.phase = LoopPhase::PostProcessing;
-        emit_phase_change(event_tx, "executing_tools", "post_processing").await;
-        return Ok(StepOutcome::Continue);
-    }
-    let remaining = fresh;
+    fresh
+}
 
-    // Parent ID threads tool-result rows off the assistant that requested them.
-    let parent_id = latest_assistant_message_id(deps, state).await?;
-
-    // Pre-resolve per-tenant credentials so the orchestrator can hand
-    // them to the connector via gRPC metadata without itself touching
-    // the credentials store. We snapshot the registered plugin prefixes
-    // once so the per-call lookup is O(prefixes) and not O(SQL).
+/// Q1 — Step 2 of executing-tools: per-call credential resolution +
+/// `tool_use` audit + `ToolExecStart` emit.
+///
+/// X2 — credentials lookup runs in parallel via `join_all`; post-S8
+/// most calls hit the in-process cache and return synchronously, but
+/// cold-cache calls overlap their Postgres + AES-GCM round-trips.
+async fn resolve_credentials(
+    deps: &LoopDeps,
+    state: &LoopState,
+    fresh: &[elena_tools::ToolInvocation],
+    event_tx: &mpsc::Sender<StreamEvent>,
+) -> elena_tools::PerCallCredentials {
     let registered_plugin_ids: Vec<String> =
         deps.plugins.manifests().iter().map(|m| m.id.as_str().to_owned()).collect();
-    let mut creds_map: elena_tools::PerCallCredentials = elena_tools::PerCallCredentials::new();
-    for call in &remaining {
+
+    let cred_lookups = fresh.iter().map(|call| {
+        let plugin_id_opt = plugin_id_from_tool_name(&call.name, &registered_plugin_ids);
+        let store_opt = deps.store.tenant_credentials.as_ref();
+        let tenant_id = state.tenant.tenant_id;
+        let call_id = call.id;
+        async move {
+            let plugin_id = plugin_id_opt?;
+            let store = store_opt?;
+            match store.get_decrypted(tenant_id, &plugin_id).await {
+                Ok(creds) if !creds.is_empty() => Some((call_id, creds)),
+                _ => None,
+            }
+        }
+    });
+    let cred_results = futures::future::join_all(cred_lookups).await;
+
+    let mut creds_map = elena_tools::PerCallCredentials::new();
+    for (call, cred) in fresh.iter().zip(cred_results) {
         let _ = event_tx.send(StreamEvent::ToolExecStart { id: call.id }).await;
-        if let Some(plugin_id) = plugin_id_from_tool_name(&call.name, &registered_plugin_ids)
-            && let Some(store) = &deps.store.tenant_credentials
-            && let Ok(creds) = store.get_decrypted(state.tenant.tenant_id, &plugin_id).await
-            && !creds.is_empty()
-        {
-            creds_map.insert(call.id, creds);
+        if let Some((call_id, creds)) = cred {
+            creds_map.insert(call_id, creds);
         }
         deps.store
             .audit
@@ -700,9 +737,21 @@ async fn handle_executing_tools(
             )
             .await;
     }
+    creds_map
+}
 
-    let results = execute_batch(
-        remaining.clone(),
+/// Q1 — Step 3 of executing-tools: hand the filtered batch + resolved
+/// credentials to the orchestrator.
+async fn dispatch_batch(
+    deps: &LoopDeps,
+    state: &LoopState,
+    fresh: Vec<elena_tools::ToolInvocation>,
+    creds_map: elena_tools::PerCallCredentials,
+    cancel: &CancellationToken,
+    event_tx: &mpsc::Sender<StreamEvent>,
+) -> Vec<(ToolCallId, Result<elena_tools::ToolOutput, elena_types::ToolError>)> {
+    execute_batch(
+        fresh,
         &deps.tools,
         &state.tenant,
         state.thread_id,
@@ -713,8 +762,25 @@ async fn handle_executing_tools(
             credentials: std::sync::Arc::new(creds_map),
         },
     )
-    .await;
+    .await
+}
 
+/// Q1 — Step 4 of executing-tools: persist results + per-result
+/// audit + `ToolResult` emit.
+///
+/// X10 — pre-builds every tool-result Message and bulk-inserts in a
+/// single DB round-trip; the per-result audit/emit loop runs after the
+/// commit so a partial failure on the bulk insert can't leave clients
+/// thinking results landed.
+async fn commit_tool_results(
+    deps: &LoopDeps,
+    state: &LoopState,
+    results: Vec<(ToolCallId, Result<elena_tools::ToolOutput, elena_types::ToolError>)>,
+    parent_id: Option<MessageId>,
+    event_tx: &mpsc::Sender<StreamEvent>,
+) -> Result<(), ElenaError> {
+    let mut tool_result_msgs: Vec<Message> = Vec::with_capacity(results.len());
+    let mut emit_meta: Vec<(ToolCallId, bool)> = Vec::with_capacity(results.len());
     for (tool_call_id, outcome) in results {
         let (content, is_error) = match outcome {
             Ok(output) => (output.content, output.is_error),
@@ -723,7 +789,7 @@ async fn handle_executing_tools(
                 (ToolResultContent::text(err.to_string()), true)
             }
         };
-        let msg = Message {
+        tool_result_msgs.push(Message {
             id: MessageId::new(),
             thread_id: state.thread_id,
             tenant_id: state.tenant.tenant_id,
@@ -738,8 +804,11 @@ async fn handle_executing_tools(
             created_at: Utc::now(),
             token_count: None,
             parent_id,
-        };
-        deps.store.threads.append_message(&msg).await?;
+        });
+        emit_meta.push((tool_call_id, is_error));
+    }
+    deps.store.threads.append_messages_bulk(&tool_result_msgs).await?;
+    for (tool_call_id, is_error) in emit_meta {
         let _ = event_tx.send(StreamEvent::ToolResult { id: tool_call_id, is_error }).await;
         deps.store
             .audit
@@ -757,14 +826,10 @@ async fn handle_executing_tools(
             )
             .await;
     }
-
-    state.pending_tool_calls.clear();
-    state.turn_count = state.turn_count.saturating_add(1);
-    state.phase = LoopPhase::PostProcessing;
-    emit_phase_change(event_tx, "executing_tools", "post_processing").await;
-    Ok(StepOutcome::Continue)
+    Ok(())
 }
 
+#[instrument(skip(deps, event_tx), fields(tenant = %state.tenant.tenant_id, thread = %state.thread_id, phase = state.phase.tag()))]
 async fn handle_post_processing(
     state: &mut LoopState,
     deps: &LoopDeps,
@@ -778,10 +843,26 @@ async fn handle_post_processing(
     {
         warn!(?e, tenant = %state.tenant.tenant_id, "record_usage failed");
     }
+    // C2 — also accumulate this turn's usage onto the per-thread total.
+    // The budget check below uses prior + current; persisting the delta
+    // here means the next turn's load_thread_usage sees the updated
+    // sum.
+    if let Err(e) = deps
+        .store
+        .tenants
+        .record_thread_usage(state.tenant.tenant_id, state.thread_id, state.usage.clone())
+        .await
+    {
+        warn!(?e, tenant = %state.tenant.tenant_id, thread = %state.thread_id, "record_thread_usage failed");
+    }
 
-    // Budget check.
-    let used = state.usage.total();
-    if used > state.tenant.budget.max_tokens_per_thread {
+    // Budget check. `effective_budget()` prefers the resolved plan's
+    // budget when set; falls back to the legacy `tenant.budget` field
+    // during the B1 transition window. C2 — sum prior cumulative
+    // (pre-loaded by the worker on Turn boot, zero on resume) plus this
+    // run's accrued usage.
+    let used = state.usage.total().saturating_add(state.prior_thread_tokens);
+    if used > state.tenant.effective_budget().max_tokens_per_thread {
         let _ = event_tx
             .send(StreamEvent::Error(ElenaError::BudgetExceeded {
                 tenant_id: state.tenant.tenant_id,
@@ -799,6 +880,12 @@ async fn handle_post_processing(
     }
 
     state.recovery.consecutive_errors = 0;
+    // C1 — reset cascade counter at end of every turn. Without this an
+    // escalation in turn N stuck the router at the escalated tier for
+    // every subsequent turn, even trivial follow-ups, because the
+    // route() short-circuit at step.rs:354 only fires when
+    // model_escalations == 0.
+    state.recovery.model_escalations = 0;
 
     if state.last_turn_had_tools {
         // Model needs to see tool results — loop back.
@@ -817,9 +904,15 @@ async fn latest_assistant_message_id(
     deps: &LoopDeps,
     state: &LoopState,
 ) -> Result<Option<MessageId>, ElenaError> {
-    let msgs =
-        deps.store.threads.list_messages(state.tenant.tenant_id, state.thread_id, 50, None).await?;
-    Ok(msgs.iter().rev().find(|m| matches!(m.kind, MessageKind::Assistant { .. })).map(|m| m.id))
+    // X3 — read just the metadata projection. Avoids ~10× the per-row
+    // serde cost of the prior list_messages call (no content blocks
+    // hauled through JSONB, no MessageKind deserialize).
+    let summaries = deps
+        .store
+        .threads
+        .list_message_summaries(state.tenant.tenant_id, state.thread_id, 50)
+        .await?;
+    Ok(summaries.iter().rev().find(|s| s.kind_tag == "assistant").map(|s| s.id))
 }
 
 /// Snapshot of tool-call state for idempotency checks.
@@ -865,40 +958,38 @@ async fn prior_tool_execution_index(
     }
     let succeeded_fingerprints: HashSet<String> = succeeded_ids
         .iter()
-        .filter_map(|id| tool_use_by_id.get(id).map(|(name, input)| tool_call_fingerprint(name, input)))
+        .filter_map(|id| {
+            tool_use_by_id.get(id).map(|(name, input)| tool_call_fingerprint(name, input))
+        })
         .collect();
     Ok(PriorToolExecIndex { ids, succeeded_fingerprints })
 }
 
 /// Stable fingerprint for "same tool + same input". Produces the same
-/// string for `{a:1,b:2}` and `{b:2,a:1}` by sorting object keys
-/// recursively.
+/// string for `{a:1,b:2}` and `{b:2,a:1}` because JCS (RFC 8785)
+/// sorts object keys recursively and normalises numeric forms.
+///
+/// Q10 — pre-Q10 this used a hand-rolled 18-line recursive canonicalizer
+/// that didn't handle numeric edge cases (e.g. `1.0` vs `1`).
+/// `serde_jcs` defers to RFC 8785 and gets all of those right.
 fn tool_call_fingerprint(name: &str, input: &serde_json::Value) -> String {
-    format!("{name}:{}", canonicalize(input))
-}
-
-fn canonicalize(v: &serde_json::Value) -> String {
-    use serde_json::Value;
-    match v {
-        Value::Object(map) => {
-            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
-            entries.sort_by(|a, b| a.0.cmp(b.0));
-            let body: Vec<String> = entries
-                .into_iter()
-                .map(|(k, v)| format!("{}:{}", serde_json::to_string(k).unwrap_or_default(), canonicalize(v)))
-                .collect();
-            format!("{{{}}}", body.join(","))
-        }
-        Value::Array(arr) => {
-            let body: Vec<String> = arr.iter().map(canonicalize).collect();
-            format!("[{}]", body.join(","))
-        }
-        other => serde_json::to_string(other).unwrap_or_default(),
-    }
+    let canonical = serde_jcs::to_string(input).unwrap_or_else(|_| input.to_string());
+    format!("{name}:{canonical}")
 }
 
 async fn emit_phase_change(tx: &mpsc::Sender<StreamEvent>, from: &str, to: &str) {
     let _ = tx.send(StreamEvent::PhaseChange { from: from.into(), to: to.into() }).await;
+}
+
+/// C12 — clamp `state.max_tokens_per_turn` against the per-tier cap
+/// from `TierEntry::max_output_tokens`. Skipped when the tier doesn't
+/// declare a cap (legacy config).
+fn clamp_max_tokens_to_tier(state: &mut LoopState, cap: Option<u32>) {
+    if let Some(cap) = cap {
+        if state.max_tokens_per_turn > cap {
+            state.max_tokens_per_turn = cap;
+        }
+    }
 }
 
 /// Compute the tool-schema subset this tenant is allowed to see.
@@ -910,10 +1001,11 @@ async fn emit_phase_change(tx: &mpsc::Sender<StreamEvent>, from: &str, to: &str)
 ///
 /// Schemas whose tool name begins with a visible `{plugin_id}_` prefix
 /// pass. Non-plugin built-ins always pass. Missing DB rows → treat as
-/// empty (permissive), so Phase-6 deployments keep working.
+/// empty (permissive), so older deployments keep working.
 async fn filter_schemas_for_tenant(
     deps: &LoopDeps,
     state: &LoopState,
+    event_tx: &mpsc::Sender<StreamEvent>,
 ) -> Vec<elena_llm::ToolSchema> {
     let all = deps.tools.schemas();
     let plugins = deps.plugins.manifests();
@@ -923,37 +1015,72 @@ async fn filter_schemas_for_tenant(
     }
     let registered: Vec<String> = plugins.iter().map(|m| m.id.as_str().to_owned()).collect();
 
-    // Pull allow-lists and ownership-visible set. Best-effort: an error
-    // on any of these degrades to "no filter" rather than failing the
-    // whole turn.
-    let tenant_allowed: Vec<String> = deps
+    // C10 — fail closed. Each policy lookup, on any error, surfaces
+    // a structured event and drops *every* schema for this turn. The
+    // model continues without tools rather than acting on a
+    // potentially-stale or over-broad set. The strip-built-ins path
+    // below would also bypass plugin filtering on success, so we have
+    // to short-circuit here instead.
+    let tenant_allowed: Vec<String> = match deps
         .store
         .tenants
         .get_tenant(state.tenant.tenant_id)
         .await
-        .map(|t| t.allowed_plugin_ids)
-        .unwrap_or_default();
-    let workspace_allowed: Vec<String> = deps
-        .store
-        .workspaces
-        .get(state.tenant.tenant_id, state.tenant.workspace_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|w| w.allowed_plugin_ids)
-        .unwrap_or_default();
-    let visible_by_ownership: Vec<String> = deps
+    {
+        Ok(t) => t.allowed_plugin_ids,
+        Err(e) => {
+            tracing::warn!(?e, tenant = %state.tenant.tenant_id, "tenant lookup failed; failing tools closed");
+            let _ = event_tx
+                .send(StreamEvent::Error(ElenaError::PermissionDenied {
+                    reason: "tenant policy unavailable; tools suppressed".into(),
+                }))
+                .await;
+            return Vec::new();
+        }
+    };
+    let workspace_allowed: Vec<String> =
+        match deps.store.workspaces.get(state.tenant.tenant_id, state.tenant.workspace_id).await {
+            Ok(w) => w.map(|ws| ws.allowed_plugin_ids).unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(?e, "workspace lookup failed; failing tools closed");
+                let _ = event_tx
+                    .send(StreamEvent::Error(ElenaError::PermissionDenied {
+                        reason: "workspace policy unavailable; tools suppressed".into(),
+                    }))
+                    .await;
+                return Vec::new();
+            }
+        };
+    let visible_by_ownership: Vec<String> = match deps
         .store
         .plugin_ownerships
         .visible_plugins(state.tenant.tenant_id, &registered)
         .await
-        .unwrap_or_else(|_| registered.clone());
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(?e, "plugin-ownership lookup failed; failing tools closed");
+            let _ = event_tx
+                .send(StreamEvent::Error(ElenaError::PermissionDenied {
+                    reason: "plugin ownership unavailable; tools suppressed".into(),
+                }))
+                .await;
+            return Vec::new();
+        }
+    };
+
+    // Plan-level allow-list — adds a third intersection layer when the
+    // gateway resolved a plan with a non-empty list. Empty (or no plan
+    // at all) means "no plan-level filter" and the layer is a no-op,
+    // preserving pre-B1 behaviour for callers without a resolved plan.
+    let plan_allowed = state.tenant.plan_allowed_plugins();
 
     // Intersect. `allowed` is the final set of plugin IDs to surface.
     let allowed: std::collections::HashSet<String> = visible_by_ownership
         .into_iter()
         .filter(|p| tenant_allowed.is_empty() || tenant_allowed.contains(p))
         .filter(|p| workspace_allowed.is_empty() || workspace_allowed.contains(p))
+        .filter(|p| plan_allowed.is_empty() || plan_allowed.iter().any(|x| x == p))
         .collect();
 
     // If every filter is empty the set equals the registered plugins —
@@ -1108,7 +1235,7 @@ mod approval_tests {
         assert_eq!(pending[1].tool_use_id, i2.id);
     }
 
-    // ----- Phase 7 · F-track edge cases -----
+    // ----- F-track edge cases -----
 
     #[test]
     fn f1_unicode_arabic_and_spanish_preserved_through_summary() {
@@ -1222,15 +1349,15 @@ mod approval_tests {
 
     #[test]
     fn f9_approval_deadline_default_is_300_seconds() {
-        // Pin the contract that the default deadline matches the Phase 7
-        // plan and the smoke's documented expectation.
+        // Pin the contract that the default deadline matches the
+        // smoke's documented expectation.
         assert_eq!(APPROVAL_DEADLINE_SECS, 300);
     }
 
     #[test]
     fn f8_deeply_nested_object_summary_does_not_blow_the_stack() {
-        // Five-level nesting (Phase 3 schema-extreme test). Build a
-        // payload mimicking what a complex plugin schema would produce.
+        // Five-level nesting (schema-extreme test). Build a payload
+        // mimicking what an involved plugin schema would produce.
         let input = serde_json::json!({
             "outer": {
                 "level2": {

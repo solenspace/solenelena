@@ -44,8 +44,8 @@ pub struct LlmRequest {
 
     /// Tool definitions visible to the model.
     ///
-    /// Phase 2 treats tool schemas as opaque JSON — `elena-tools` (Phase 3)
-    /// provides the structured builder.
+    /// Tool schemas are opaque JSON here — `elena-tools` provides the
+    /// structured builder.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolSchema>,
 
@@ -175,9 +175,9 @@ pub enum ToolChoice {
 
 /// Opaque tool schema.
 ///
-/// Phase 2 treats tool definitions as pre-rendered JSON — what goes in the
-/// `tools` array of the outgoing request body. `elena-tools` (Phase 3) will
-/// provide the structured builder and `Tool` trait that produces these.
+/// Tool definitions are pre-rendered JSON here — what goes in the
+/// `tools` array of the outgoing request body. `elena-tools` provides
+/// the structured builder and `Tool` trait that produces these.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ToolSchema(pub Value);
@@ -215,6 +215,7 @@ mod tests {
             permissions: PermissionSet::default(),
             budget: BudgetLimits::default(),
             tier: TenantTier::Pro,
+            plan: None,
             metadata: std::collections::HashMap::new(),
         }
     }

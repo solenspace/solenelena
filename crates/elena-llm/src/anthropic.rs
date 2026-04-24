@@ -43,7 +43,7 @@ use crate::{
 
 /// Authentication for Anthropic.
 ///
-/// Phase 2 supports API-key auth only. OAuth, Bedrock, Foundry, Vertex
+/// API-key auth only is supported here. OAuth, Bedrock, Foundry, Vertex
 /// variants can be added as additional enum cases later without breaking
 /// the `AnthropicClient` API.
 #[derive(Debug, Clone)]
@@ -98,7 +98,7 @@ impl AnthropicClient {
             .user_agent(concat!("elena-llm/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_millis(cfg.connect_timeout_ms))
             .http2_prior_knowledge()
-            .pool_max_idle_per_host(8);
+            .pool_max_idle_per_host(cfg.pool_max_idle_per_host);
         if let Some(ms) = cfg.request_timeout_ms {
             builder = builder.timeout(Duration::from_millis(ms));
         }
@@ -433,6 +433,7 @@ mod tests {
             request_timeout_ms: None,
             connect_timeout_ms: 5_000,
             max_attempts: 3,
+            pool_max_idle_per_host: 64,
         };
         let client =
             AnthropicClient::new(&cfg, AnthropicAuth::ApiKey(cfg.api_key.clone())).unwrap();

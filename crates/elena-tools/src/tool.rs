@@ -92,9 +92,10 @@ pub trait Tool: Send + Sync + 'static {
     /// Consult the tenant's [`PermissionSet`] and decide whether the call
     /// proceeds. Returns [`Permission::Allow`] by default.
     ///
-    /// Phase 3 treats [`Permission::Ask`] as allow (no prompt channel yet);
-    /// [`Permission::Deny`] surfaces as [`ToolError::Execution`] during
-    /// orchestration.
+    /// [`Permission::Ask`] is treated as allow at this layer (no prompt
+    /// channel here — autonomy modes handle the pause-for-approval
+    /// surface); [`Permission::Deny`] surfaces as [`ToolError::Execution`]
+    /// during orchestration.
     async fn check_permission(&self, _input: &Value, _permissions: &PermissionSet) -> Permission {
         Permission::allow()
     }

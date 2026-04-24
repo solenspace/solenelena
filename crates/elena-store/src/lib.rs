@@ -10,6 +10,10 @@
 //! SQL layer; cross-tenant reads surface as
 //! [`StoreError::TenantMismatch`](elena_types::StoreError::TenantMismatch).
 
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -18,6 +22,8 @@ mod audit;
 mod cache;
 mod episode;
 mod pg;
+mod plan;
+mod plan_assignment;
 mod plugin_ownership;
 mod rate_limit;
 mod redis;
@@ -38,6 +44,8 @@ pub use audit::{
 };
 pub use cache::SessionCache;
 pub use episode::{Episode, EpisodeStore};
+pub use plan::PlanStore;
+pub use plan_assignment::PlanAssignmentStore;
 pub use plugin_ownership::PluginOwnershipStore;
 pub use rate_limit::{
     RateDecision, RateLimiter, plugin_concurrency_key, provider_concurrency_key,
@@ -45,7 +53,7 @@ pub use rate_limit::{
 };
 pub use tenant::{TenantRecord, TenantStore};
 pub use tenant_credentials::TenantCredentialsStore;
-pub use thread::ThreadStore;
+pub use thread::{MessageSummary, ThreadStore};
 pub use workspace::{WorkspaceRecord, WorkspaceStore};
 
 /// All persistence handles for Elena.
@@ -62,18 +70,23 @@ pub struct Store {
     pub cache: SessionCache,
     /// Per-workspace episodic memory.
     pub episodes: EpisodeStore,
-    /// Phase-7 rate limiter — Redis Lua token buckets + inflight counter.
+    /// Rate limiter — Redis Lua token buckets + inflight counter.
     pub rate_limits: RateLimiter,
-    /// Phase-7 approvals store — Cautious/Moderate pause-for-approval.
+    /// Approvals store — Cautious/Moderate pause-for-approval.
     pub approvals: ApprovalsStore,
-    /// Phase-7 workspace store — global instructions + plugin allow-list.
+    /// Workspace store — global instructions + plugin allow-list.
     pub workspaces: WorkspaceStore,
-    /// Phase-7 audit sink — every load-bearing loop action writes a row
-    /// here. Production ships [`PostgresAuditSink`]; tests can swap in
+    /// Audit sink — every load-bearing loop action writes a row here.
+    /// Production ships [`PostgresAuditSink`]; tests can swap in
     /// [`NullAuditSink`] via [`Store::with_audit`].
     pub audit: Arc<dyn AuditSink>,
-    /// Phase-7 plugin ownership — Hannlys creator-isolation filter.
+    /// Plugin ownership — Hannlys creator-isolation filter.
     pub plugin_ownerships: PluginOwnershipStore,
+    /// B1 — App-defined plans (replaces the closed `TenantTier` enum).
+    pub plans: PlanStore,
+    /// B1 — Plan assignments. Resolves `(tenant, user, workspace)` to a
+    /// [`elena_types::ResolvedPlan`] at request time.
+    pub plan_assignments: PlanAssignmentStore,
     /// Per-tenant encrypted credentials. Wrapped in [`Option`] so a
     /// deployment that has not provisioned the master key can still boot
     /// (single-tenant connectors fall back to env). Hot-loaded by the
@@ -116,7 +129,9 @@ impl Store {
             approvals: ApprovalsStore::new(pg.clone()),
             workspaces: WorkspaceStore::new(pg.clone()),
             audit,
-            plugin_ownerships: PluginOwnershipStore::new(pg),
+            plugin_ownerships: PluginOwnershipStore::new(pg.clone()),
+            plans: PlanStore::new(pg.clone()),
+            plan_assignments: PlanAssignmentStore::new(pg),
             tenant_credentials,
         })
     }

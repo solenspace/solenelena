@@ -68,6 +68,11 @@ pub struct OpenAiCompatConfig {
     /// Maximum retry attempts for transient errors.
     #[serde(default = "default_max_attempts")]
     pub max_attempts: u32,
+    /// X8 — Maximum idle HTTP connections kept in the per-host pool.
+    /// Pre-X8 hard-coded `8`; raised default to 64 for high-concurrency
+    /// pods. Tune higher for very high-throughput Groq/OpenRouter routes.
+    #[serde(default = "default_pool_max_idle_per_host")]
+    pub pool_max_idle_per_host: usize,
 }
 
 const fn default_connect_timeout_ms() -> u64 {
@@ -75,6 +80,9 @@ const fn default_connect_timeout_ms() -> u64 {
 }
 const fn default_max_attempts() -> u32 {
     3
+}
+const fn default_pool_max_idle_per_host() -> usize {
+    64
 }
 
 /// Cheap-to-clone handle to an OpenAI-compatible provider.
@@ -111,7 +119,7 @@ impl OpenAiCompatClient {
         let mut builder = Client::builder()
             .user_agent(concat!("elena-llm/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_millis(cfg.connect_timeout_ms))
-            .pool_max_idle_per_host(8);
+            .pool_max_idle_per_host(cfg.pool_max_idle_per_host);
         if let Some(ms) = cfg.request_timeout_ms {
             builder = builder.timeout(Duration::from_millis(ms));
         }
@@ -748,6 +756,7 @@ mod tests {
             permissions: PermissionSet::default(),
             budget: BudgetLimits::default(),
             tier: TenantTier::Pro,
+            plan: None,
             metadata: std::collections::HashMap::new(),
         }
     }

@@ -25,7 +25,7 @@ pub struct LoopState {
     pub tenant: TenantContext,
     /// The model this loop is pinned to for the current turn.
     ///
-    /// Phase 4 populates this from
+    /// Populated from
     /// [`ModelRouter::resolve`](elena_router::ModelRouter::resolve) at the
     /// start of each `Streaming` phase based on the current
     /// [`model_tier`](Self::model_tier); cascade escalation updates both.
@@ -33,9 +33,9 @@ pub struct LoopState {
 
     /// Which LLM provider serves the current turn.
     ///
-    /// Phase 6.5 addition: router picks `(provider, model)` per tier, so
-    /// state carries both. Defaults to `"anthropic"` for pre-Phase-6.5
-    /// checkpoints that only have `model`.
+    /// Router picks `(provider, model)` per tier, so state carries
+    /// both. Defaults to `"anthropic"` for older serialized checkpoints
+    /// that only have `model`.
     #[serde(default = "default_provider")]
     pub provider: String,
 
@@ -70,10 +70,19 @@ pub struct LoopState {
     /// Per-thread autonomy policy. Governs whether the loop pauses between
     /// the model proposing tool calls and the worker executing them.
     ///
-    /// Pre-Phase-7 checkpoints won't carry this field; `#[serde(default)]`
-    /// gives them [`AutonomyMode::Moderate`] — the safe middle ground.
+    /// Older serialized checkpoints won't carry this field;
+    /// `#[serde(default)]` gives them [`AutonomyMode::Moderate`] — the
+    /// safe middle ground.
     #[serde(default)]
     pub autonomy: AutonomyMode,
+    /// C2 — Cumulative tokens spent on this thread *before* the current
+    /// loop run. Loaded by the worker from `thread_usage` at fresh-start
+    /// (zero on `ResumeFromApproval` since the checkpoint already
+    /// reflects the up-to-pause state). The per-thread budget check
+    /// adds this to `usage.total()` so a thread spanning many turns
+    /// hits its cap on the right turn.
+    #[serde(default)]
+    pub prior_thread_tokens: u64,
 }
 
 const fn default_model_tier() -> ModelTier {
@@ -155,7 +164,7 @@ pub struct RecoveryState {
     pub context_rebuilds: u32,
     /// How many times we've retried after max-output-tokens.
     pub max_output_retries: u32,
-    /// Phase 4: how many cascade-driven tier escalations this turn.
+    /// How many cascade-driven tier escalations this turn.
     #[serde(default)]
     pub model_escalations: u32,
 }
@@ -186,6 +195,7 @@ impl LoopState {
             pending_tool_calls: Vec::new(),
             last_turn_had_tools: false,
             autonomy: AutonomyMode::default(),
+            prior_thread_tokens: 0,
         }
     }
 
@@ -217,6 +227,7 @@ mod tests {
             permissions: PermissionSet::default(),
             budget: BudgetLimits::default(),
             tier: TenantTier::Pro,
+            plan: None,
             metadata: std::collections::HashMap::new(),
         }
     }
@@ -267,10 +278,10 @@ mod tests {
 
     #[test]
     fn pre_phase7_checkpoint_defaults_autonomy_to_moderate() {
-        // Serialize a fresh state, strip the `autonomy` key to simulate a
-        // pre-Phase-7 checkpoint, and confirm the field defaults to
-        // Moderate on deserialize. This is the serde-default contract we
-        // depend on for the rolling Phase-7 deploy.
+        // Serialize a fresh state, strip the `autonomy` key to simulate
+        // an older serialized checkpoint, and confirm the field defaults
+        // to Moderate on deserialize. This is the serde-default contract
+        // we depend on for back-compat across rolling deploys.
         let fresh = base_state();
         let mut as_value = serde_json::to_value(&fresh).unwrap();
         as_value.as_object_mut().unwrap().remove("autonomy");

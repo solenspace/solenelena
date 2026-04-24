@@ -1,115 +1,21 @@
 //! JWT validator + tenant-context extraction.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
-use elena_types::{
-    BudgetLimits, PermissionSet, SessionId, TenantContext, TenantId, TenantTier, ThreadId, UserId,
-    WorkspaceId,
-};
-use jsonwebtoken::{DecodingKey, Validation};
-use secrecy::ExposeSecret;
-use serde::{Deserialize, Serialize};
+use elena_auth::JwtError;
+use elena_store::Store;
+use elena_types::{BudgetLimits, PermissionSet, TenantContext, TenantTier, ThreadId};
 
-use crate::config::{JwtAlgorithm, JwtConfig};
 use crate::error::GatewayError;
 
-/// Expected JWT claim shape. Permissions + budget are intentionally not in
-/// the JWT — they're loaded from [`TenantStore`](elena_store::TenantStore)
-/// when the session starts, so operator-driven policy changes take effect
-/// without reissuing tokens.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ElenaJwtClaims {
-    /// Tenant (application) identifier.
-    pub tenant_id: TenantId,
-    /// End-user identifier within the tenant.
-    pub user_id: UserId,
-    /// Workspace identifier.
-    pub workspace_id: WorkspaceId,
-    /// Optional session id; gateway mints one if absent.
-    #[serde(default)]
-    pub session_id: Option<SessionId>,
-    /// Tenant subscription tier.
-    pub tier: TenantTier,
-    /// Expected `iss`.
-    pub iss: String,
-    /// Expected `aud`.
-    pub aud: String,
-    /// Expiration unix seconds.
-    pub exp: u64,
-    /// Not-before unix seconds.
-    #[serde(default)]
-    pub nbf: Option<u64>,
-}
-
-/// Stateless JWT verifier. Cheap to clone.
-#[derive(Clone)]
-pub struct JwtValidator {
-    key: DecodingKey,
-    validation: Validation,
-}
-
-impl std::fmt::Debug for JwtValidator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("JwtValidator").finish_non_exhaustive()
-    }
-}
-
-impl JwtValidator {
-    /// Build a validator from a [`JwtConfig`].
-    pub fn from_config(cfg: &JwtConfig) -> Result<Self, GatewayError> {
-        let alg = cfg.algorithm.to_jsonwebtoken();
-        let key = if cfg.algorithm.is_symmetric() {
-            DecodingKey::from_secret(cfg.secret_or_public_key.expose_secret().as_bytes())
-        } else {
-            match cfg.algorithm {
-                JwtAlgorithm::RS256 | JwtAlgorithm::RS384 | JwtAlgorithm::RS512 => {
-                    DecodingKey::from_rsa_pem(cfg.secret_or_public_key.expose_secret().as_bytes())
-                        .map_err(|e| GatewayError::Internal(format!("invalid RSA key: {e}")))?
-                }
-                JwtAlgorithm::ES256 | JwtAlgorithm::ES384 => {
-                    DecodingKey::from_ec_pem(cfg.secret_or_public_key.expose_secret().as_bytes())
-                        .map_err(|e| GatewayError::Internal(format!("invalid EC key: {e}")))?
-                }
-                _ => unreachable!("symmetric case handled above"),
-            }
-        };
-
-        let mut validation = Validation::new(alg);
-        validation.set_issuer(std::slice::from_ref(&cfg.issuer));
-        validation.set_audience(std::slice::from_ref(&cfg.audience));
-        validation.leeway = cfg.leeway_seconds;
-        validation.validate_exp = true;
-
-        Ok(Self { key, validation })
-    }
-
-    /// Verify `token` and return the claims on success.
-    pub fn verify(&self, token: &str) -> Result<ElenaJwtClaims, GatewayError> {
-        let data = jsonwebtoken::decode::<ElenaJwtClaims>(token, &self.key, &self.validation)
-            .map_err(|err| map_jwt_err(&err))?;
-        Ok(data.claims)
-    }
-
-    /// Verify + project claims into a fresh [`TenantContext`]. Budget +
-    /// permissions default to safe values; callers can overlay from the
-    /// store if they want per-tenant specifics.
-    pub fn verify_to_context(&self, token: &str) -> Result<TenantContext, GatewayError> {
-        let claims = self.verify(token)?;
-        Ok(TenantContext {
-            tenant_id: claims.tenant_id,
-            user_id: claims.user_id,
-            workspace_id: claims.workspace_id,
-            thread_id: ThreadId::new(),
-            session_id: claims.session_id.unwrap_or_else(SessionId::new),
-            permissions: PermissionSet::default(),
-            budget: default_budget_for_tier(claims.tier),
-            tier: claims.tier,
-            metadata: HashMap::new(),
-        })
-    }
-}
+/// Q3 — Validator + claims live in elena-auth; re-exported here so
+/// existing `elena_gateway::JwtValidator` / `ElenaJwtClaims` imports
+/// keep compiling without elena-auth becoming an explicit dep at
+/// every call site.
+pub use elena_auth::{ElenaJwtClaims, JwtValidator};
 
 fn default_budget_for_tier(tier: TenantTier) -> BudgetLimits {
     match tier {
@@ -118,23 +24,89 @@ fn default_budget_for_tier(tier: TenantTier) -> BudgetLimits {
     }
 }
 
-fn map_jwt_err(err: &jsonwebtoken::errors::Error) -> GatewayError {
-    use jsonwebtoken::errors::ErrorKind;
-    let reason = match err.kind() {
-        ErrorKind::ExpiredSignature => "token expired",
-        ErrorKind::ImmatureSignature => "token not yet valid",
-        ErrorKind::InvalidAudience => "wrong audience",
-        ErrorKind::InvalidIssuer => "wrong issuer",
-        ErrorKind::InvalidSignature => "bad signature",
-        ErrorKind::InvalidToken | ErrorKind::Base64(_) | ErrorKind::Json(_) => "malformed token",
-        _ => "auth rejected",
-    };
-    GatewayError::Unauthorized { reason }
+impl From<JwtError> for GatewayError {
+    fn from(err: JwtError) -> Self {
+        match err {
+            JwtError::Verification { reason } => Self::Unauthorized { reason },
+            JwtError::Setup(message) => Self::Internal(message),
+        }
+    }
 }
 
-/// Extract `TenantContext` from an incoming request's Authorization header
-/// (or `?token=...` fallback). Mount this as an axum extractor in your
-/// route handlers.
+/// Verify + project claims into a fresh [`TenantContext`]. Budget +
+/// permissions default to safe values; callers overlay store-resolved
+/// policy via [`verify_to_context_with_plan`].
+///
+/// `plan` is left `None` here — the synchronous path is kept for
+/// callers that don't have a `Store` handy. Production callers should
+/// use [`verify_to_context_with_plan`].
+pub fn verify_to_context(
+    validator: &JwtValidator,
+    token: &str,
+) -> Result<TenantContext, GatewayError> {
+    let claims = validator.verify(token)?;
+    Ok(TenantContext {
+        tenant_id: claims.tenant_id,
+        user_id: claims.user_id,
+        workspace_id: claims.workspace_id,
+        thread_id: ThreadId::new(),
+        session_id: claims.session_id.unwrap_or_else(elena_types::SessionId::new),
+        permissions: PermissionSet::default(),
+        budget: default_budget_for_tier(claims.tier),
+        tier: claims.tier,
+        plan: None,
+        metadata: HashMap::new(),
+    })
+}
+
+/// Verify + resolve the per-(tenant, user, workspace) [`elena_types::ResolvedPlan`]
+/// from the plan-assignments store, then stamp it onto the [`TenantContext`].
+///
+/// On store error the plan is left `None` (graceful degradation —
+/// downstream code falls back to the legacy `tier` + `budget` during
+/// the B1 transition). The failure is logged at WARN so operators
+/// notice if every request is degrading.
+pub async fn verify_to_context_with_plan(
+    validator: &JwtValidator,
+    token: &str,
+    store: &Store,
+) -> Result<TenantContext, GatewayError> {
+    let mut ctx = verify_to_context(validator, token)?;
+    match store
+        .plan_assignments
+        .resolve(ctx.tenant_id, Some(ctx.user_id), Some(ctx.workspace_id))
+        .await
+    {
+        Ok(plan) => ctx.plan = Some(plan),
+        Err(err) => {
+            tracing::warn!(
+                tenant_id = %ctx.tenant_id,
+                user_id = %ctx.user_id,
+                workspace_id = %ctx.workspace_id,
+                error = ?err,
+                "plan resolution failed; falling back to tier-derived defaults"
+            );
+        }
+    }
+    Ok(ctx)
+}
+
+/// Extract `TenantContext` from an incoming request's Authorization header.
+///
+/// Two acceptable token sources:
+/// 1. `Authorization: Bearer <jwt>` — the standard HTTP path.
+/// 2. `Sec-WebSocket-Protocol: elena.bearer.<jwt>` — browser-friendly
+///    WS upgrade path (browsers can't set arbitrary headers on
+///    `new WebSocket(...)`).
+///
+/// The legacy `?token=<jwt>` query-string fallback was removed in S7
+/// to drop the hand-rolled urldecode helper.
+///
+/// When the surrounding state exposes both [`JwtValidator`] and
+/// `Arc<Store>` (the gateway always does), the extractor resolves the
+/// caller's [`elena_types::ResolvedPlan`] from `plan_assignments` and
+/// stamps it onto the returned context. Store errors degrade gracefully
+/// to `plan = None` so a transient DB blip doesn't 401 every client.
 #[derive(Debug, Clone)]
 pub struct AuthedTenant(pub TenantContext);
 
@@ -142,66 +114,67 @@ impl<S> FromRequestParts<S> for AuthedTenant
 where
     S: Send + Sync,
     JwtValidator: FromRef<S>,
+    Arc<Store>: FromRef<S>,
 {
     type Rejection = GatewayError;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let validator = JwtValidator::from_ref(state);
+        let store = <Arc<Store>>::from_ref(state);
         let token =
             extract_bearer(parts).ok_or(GatewayError::Unauthorized { reason: "missing token" })?;
-        let ctx = validator.verify_to_context(&token)?;
+        let ctx = verify_to_context_with_plan(&validator, &token, &store).await?;
         Ok(Self(ctx))
     }
 }
 
+/// `Sec-WebSocket-Protocol` value prefix that wraps a bearer JWT for
+/// browser WS upgrades. Clients send
+/// `Sec-WebSocket-Protocol: elena.bearer.<jwt>`; the gateway extracts
+/// the JWT and verifies as if it had arrived via `Authorization`.
+const WS_BEARER_PROTOCOL_PREFIX: &str = "elena.bearer.";
+
 fn extract_bearer(parts: &Parts) -> Option<String> {
-    // Authorization: Bearer xyz
+    // 1. Authorization: Bearer <jwt> — standard HTTP path.
     if let Some(value) = parts.headers.get(axum::http::header::AUTHORIZATION) {
         if let Ok(s) = value.to_str() {
             if let Some(rest) = s.strip_prefix("Bearer ") {
-                return Some(rest.trim().to_owned());
+                let trimmed = rest.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_owned());
+                }
             }
         }
     }
-    // ?token=... fallback (useful for WebSocket upgrade in browsers that
-    // can't set Authorization on WS).
-    let query = parts.uri.query()?;
-    for pair in query.split('&') {
-        if let Some(rest) = pair.strip_prefix("token=") {
-            let decoded = urldecode(rest);
-            if !decoded.is_empty() {
-                return Some(decoded);
+    // 2. Sec-WebSocket-Protocol: elena.bearer.<jwt> — browser WS path.
+    //    Header is comma-separated; pick the first sub-protocol that
+    //    matches our prefix.
+    if let Some(value) = parts.headers.get(axum::http::header::SEC_WEBSOCKET_PROTOCOL) {
+        if let Ok(s) = value.to_str() {
+            for proto in s.split(',') {
+                let proto = proto.trim();
+                if let Some(jwt) = proto.strip_prefix(WS_BEARER_PROTOCOL_PREFIX) {
+                    if !jwt.is_empty() {
+                        return Some(jwt.to_owned());
+                    }
+                }
             }
         }
     }
     None
 }
 
-fn urldecode(s: &str) -> String {
-    // Minimal %xx decoder — full percent decoding pulls in `form_urlencoded`
-    // which would add a dep for a ~10-line helper. JWTs themselves contain
-    // only Base64URL (no percent-escape), so literal `%` is unusual.
-    let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(byte as char);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i] as char);
-        i += 1;
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
+    //! Q3 — Pure-JWT tests (valid token, expiry, audience, signature,
+    //! custom issuer, C5.5 stateless contract) live in
+    //! `elena_auth::jwt::tests`. The tests below cover only the
+    //! gateway-specific axum integration: the
+    //! `JwtError → GatewayError` mapping, `verify_to_context`'s
+    //! `plan = None` invariant, and `extract_bearer`'s header parsing.
+    use elena_auth::JwtConfig;
+    use elena_types::{TenantId, UserId, WorkspaceId};
     use jsonwebtoken::{EncodingKey, Header, encode};
-    use secrecy::SecretString;
 
     use super::*;
 
@@ -234,85 +207,17 @@ mod tests {
     }
 
     #[test]
-    fn valid_token_is_accepted() {
-        let v = validator();
-        let token = sign(&claims(3_600), "elena-dev-secret-not-for-production");
-        let out = v.verify(&token).unwrap();
-        assert_eq!(out.iss, "elena-dev");
-    }
-
-    #[test]
-    fn expired_token_rejected() {
-        let v = validator();
-        let token = sign(&claims(-3_600), "elena-dev-secret-not-for-production");
-        match v.verify(&token).unwrap_err() {
+    fn jwt_error_maps_to_gateway_error() {
+        // Verification failures become 401 Unauthorized with the same reason tag.
+        let unauth: GatewayError = JwtError::Verification { reason: "token expired" }.into();
+        match unauth {
             GatewayError::Unauthorized { reason } => assert_eq!(reason, "token expired"),
             other => panic!("expected Unauthorized, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn wrong_audience_rejected() {
-        let v = validator();
-        let mut c = claims(3_600);
-        c.aud = "someone-else".into();
-        let token = sign(&c, "elena-dev-secret-not-for-production");
-        match v.verify(&token).unwrap_err() {
-            GatewayError::Unauthorized { reason } => assert_eq!(reason, "wrong audience"),
-            other => panic!("expected Unauthorized, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn bad_signature_rejected() {
-        let v = validator();
-        let token = sign(&claims(3_600), "wrong-secret");
-        match v.verify(&token).unwrap_err() {
-            GatewayError::Unauthorized { reason } => assert_eq!(reason, "bad signature"),
-            other => panic!("expected Unauthorized, got {other:?}"),
-        }
-    }
-
-    /// C5.5 — Mid-session JWT expiry contract.
-    ///
-    /// The gateway's `JwtValidator` verifies tokens **per call**: it
-    /// caches no state about prior verifications. So a token that was
-    /// valid at the WS-upgrade extractor and later expires will be
-    /// rejected by the next `verify()` (e.g., when the client tries to
-    /// reconnect or open a new thread).
-    ///
-    /// In v1.0 the WS handler does NOT re-verify the JWT on every frame
-    /// — sessions are long-lived by design. The mitigation is short JWT
-    /// TTLs (operators set ~1h) so worst-case session staleness is
-    /// bounded. This test pins the contract: the validator is stateless
-    /// and never lies about expiry. We use a tight leeway (1s) instead
-    /// of the production 60s default so the test runs in ~3s.
-    #[test]
-    fn c55_validator_is_stateless_and_rejects_token_after_it_expires() {
-        let cfg = JwtConfig {
-            algorithm: JwtAlgorithm::HS256,
-            secret_or_public_key: SecretString::from("elena-dev-secret-not-for-production"),
-            issuer: "elena-dev".into(),
-            audience: "elena-clients".into(),
-            leeway_seconds: 1,
-        };
-        let v = JwtValidator::from_config(&cfg).unwrap();
-
-        // 1. Mint a token valid for the next 1 second.
-        let now = chrono::Utc::now().timestamp();
-        let mut c = claims(0);
-        c.exp = u64::try_from(now + 1).unwrap_or(0);
-        let token = sign(&c, "elena-dev-secret-not-for-production");
-        let _ok = v.verify(&token).expect("token must be valid right now");
-
-        // 2. After expiry + leeway window passes, the same validator
-        //    rejects the same token. No "I previously accepted this"
-        //    cache holds it valid.
-        std::thread::sleep(std::time::Duration::from_secs(3));
-        match v.verify(&token).unwrap_err() {
-            GatewayError::Unauthorized { reason } => assert_eq!(reason, "token expired"),
-            other => panic!("expected Unauthorized after expiry, got {other:?}"),
-        }
+        // Setup failures become 500 Internal — bad PEM at boot is an
+        // operator misconfiguration, not a client problem.
+        let setup: GatewayError = JwtError::Setup("bad PEM".into()).into();
+        assert!(matches!(setup, GatewayError::Internal(_)), "got {setup:?}");
     }
 
     #[test]
@@ -320,27 +225,63 @@ mod tests {
         let v = validator();
         let c = claims(3_600);
         let token = sign(&c, "elena-dev-secret-not-for-production");
-        let ctx = v.verify_to_context(&token).unwrap();
+        let ctx = verify_to_context(&v, &token).unwrap();
         assert_eq!(ctx.tenant_id, c.tenant_id);
         assert_eq!(ctx.user_id, c.user_id);
         assert_eq!(ctx.workspace_id, c.workspace_id);
         assert_eq!(ctx.tier, TenantTier::Pro);
+        // The synchronous path doesn't have a Store handle, so plan
+        // resolution is the caller's responsibility — verify it's left
+        // None so the contract with downstream readers stays clear.
+        assert!(ctx.plan.is_none(), "verify_to_context must leave plan = None");
+    }
+
+    fn parts_with_headers(headers: &[(&'static str, &str)]) -> axum::http::request::Parts {
+        let mut req = axum::http::Request::builder().uri("/whatever");
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        req.body(()).unwrap().into_parts().0
     }
 
     #[test]
-    fn custom_validator_with_different_issuer() {
-        let cfg = JwtConfig {
-            algorithm: JwtAlgorithm::HS256,
-            secret_or_public_key: SecretString::from("other-secret"),
-            issuer: "other-issuer".into(),
-            audience: "other-audience".into(),
-            leeway_seconds: 10,
-        };
-        let v = JwtValidator::from_config(&cfg).unwrap();
-        let mut c = claims(3_600);
-        c.iss = "other-issuer".into();
-        c.aud = "other-audience".into();
-        let token = sign(&c, "other-secret");
-        assert!(v.verify(&token).is_ok());
+    fn extract_bearer_from_authorization_header() {
+        let parts = parts_with_headers(&[("authorization", "Bearer abc.def.ghi")]);
+        assert_eq!(extract_bearer(&parts), Some("abc.def.ghi".to_owned()));
+    }
+
+    #[test]
+    fn extract_bearer_from_ws_subprotocol() {
+        let parts = parts_with_headers(&[("sec-websocket-protocol", "elena.bearer.abc.def.ghi")]);
+        assert_eq!(extract_bearer(&parts), Some("abc.def.ghi".to_owned()));
+    }
+
+    #[test]
+    fn extract_bearer_from_ws_subprotocol_with_other_protocols_present() {
+        let parts = parts_with_headers(&[(
+            "sec-websocket-protocol",
+            "json, elena.bearer.abc.def.ghi, other",
+        )]);
+        assert_eq!(extract_bearer(&parts), Some("abc.def.ghi".to_owned()));
+    }
+
+    #[test]
+    fn extract_bearer_rejects_empty_authorization() {
+        let parts = parts_with_headers(&[("authorization", "Bearer ")]);
+        assert_eq!(extract_bearer(&parts), None);
+    }
+
+    #[test]
+    fn extract_bearer_query_string_no_longer_accepted() {
+        // S7 — `?token=` is gone. A request with a token only in the query
+        // string must be rejected so an attacker can't get around the
+        // header-only contract by smuggling a JWT in URL params.
+        let parts = axum::http::Request::builder()
+            .uri("/v1/threads/abc/stream?token=abc.def.ghi")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        assert_eq!(extract_bearer(&parts), None);
     }
 }

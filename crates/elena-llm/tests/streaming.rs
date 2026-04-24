@@ -4,6 +4,8 @@
 //! server and assert on (a) what the client sends and (b) how it handles
 //! the served responses.
 
+// B1.6 — soak deprecated TenantTier warnings until the type is removed.
+#![allow(deprecated)]
 #![cfg(test)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -37,6 +39,7 @@ fn tenant() -> TenantContext {
         permissions: PermissionSet::default(),
         budget: BudgetLimits::default(),
         tier: TenantTier::Pro,
+        plan: None,
         metadata: HashMap::new(),
     }
 }
@@ -81,6 +84,7 @@ fn client_for(server: &MockServer, max_attempts: u32) -> AnthropicClient {
         request_timeout_ms: Some(5_000),
         connect_timeout_ms: 2_000,
         max_attempts,
+        pool_max_idle_per_host: 64,
     };
     AnthropicClient::new(&cfg, AnthropicAuth::ApiKey(cfg.api_key.clone())).unwrap()
 }

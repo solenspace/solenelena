@@ -11,12 +11,13 @@ use std::collections::BTreeMap;
 use axum::{
     Json,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use elena_types::TenantId;
 use serde::Deserialize;
 
+use crate::auth::require_tenant_scope;
 use crate::state::AdminState;
 
 /// Request body for `PUT /admin/v1/tenants/:tenant_id/credentials/:plugin_id`.
@@ -38,8 +39,12 @@ pub struct PutCredentialsRequest {
 pub async fn put_credentials(
     State(state): State<AdminState>,
     Path((tenant_id, plugin_id)): Path<(TenantId, String)>,
+    headers: HeaderMap,
     Json(req): Json<PutCredentialsRequest>,
 ) -> impl IntoResponse {
+    if let Err(s) = require_tenant_scope(&state.store, tenant_id, &headers).await {
+        return s.into_response();
+    }
     let Some(creds) = state.store.tenant_credentials.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -62,7 +67,11 @@ pub async fn put_credentials(
 pub async fn delete_credentials(
     State(state): State<AdminState>,
     Path((tenant_id, plugin_id)): Path<(TenantId, String)>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    if let Err(s) = require_tenant_scope(&state.store, tenant_id, &headers).await {
+        return s.into_response();
+    }
     let Some(creds) = state.store.tenant_credentials.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,

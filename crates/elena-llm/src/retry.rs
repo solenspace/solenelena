@@ -1,13 +1,14 @@
 //! Retry policy, HTTP-status classification, and exponential backoff with
 //! jitter.
 //!
-//! Behavior mirrors `services/api/withRetry.ts` in the reference TS source,
-//! simplified for Phase 2:
+//! Behavior mirrors `services/api/withRetry.ts` in the reference TS
+//! source, simplified:
 //!
 //! - Base delay 500ms, max 32s, 10 attempts, 25% jitter.
 //! - 408 / 409 / 5xx / 529 / connection errors retry.
 //! - 529 retries are capped at 3 (then surfaced as
-//!   [`LlmApiError::Repeated529`]) — Phase 2 has no fallback model.
+//!   [`LlmApiError::Repeated529`]) — there is no fallback model at this
+//!   layer.
 //! - 429 always retries (subscriber-aware gating lands when Elena's billing
 //!   state does).
 //! - `Retry-After` header parsed as integer seconds; overrides the
@@ -361,7 +362,7 @@ mod tests {
     fn retry_after_malformed_is_none() {
         let mut headers = HeaderMap::new();
         headers.insert(header::RETRY_AFTER, HeaderValue::from_static("Mon, 29 Apr..."));
-        // HTTP-date form — not supported in Phase 2.
+        // HTTP-date form — not supported here.
         assert_eq!(parse_retry_after_ms(&headers), None);
     }
 

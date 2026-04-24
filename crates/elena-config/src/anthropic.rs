@@ -30,6 +30,14 @@ pub struct AnthropicConfig {
     /// Maximum retry attempts per request (default: 10).
     #[serde(default = "default_max_attempts")]
     pub max_attempts: u32,
+
+    /// X8 — Maximum idle HTTP connections kept in the per-host pool.
+    /// At high concurrency (~128 in-flight loops × 2 providers = 256
+    /// active sockets) the pre-X8 hard-coded `8` thrashed connect/close;
+    /// 64 is comfortable for any single-pod throughput we'd realistically
+    /// run. Tune up for very high-throughput pods.
+    #[serde(default = "default_pool_max_idle_per_host")]
+    pub pool_max_idle_per_host: usize,
 }
 
 fn default_base_url() -> String {
@@ -46,4 +54,8 @@ const fn default_connect_timeout_ms() -> u64 {
 
 const fn default_max_attempts() -> u32 {
     10
+}
+
+const fn default_pool_max_idle_per_host() -> usize {
+    64
 }

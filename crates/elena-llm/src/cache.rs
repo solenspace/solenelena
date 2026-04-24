@@ -1,7 +1,7 @@
 //! Prompt-cache decision + marker placement.
 //!
-//! Phase 2 Elena cache policy, a simplified port of the reference TS
-//! source's layered logic:
+//! Elena cache policy, a simplified port of the reference TS source's
+//! layered logic:
 //!
 //! - **TTL eligibility** is latched at construction. Tenant tier drives it
 //!   (paid tiers get 1h TTL; Free stays at default 5m). The operator's
@@ -13,9 +13,10 @@
 //!   text block of the last message) plus one system-level marker (on the
 //!   final system block).
 //!
-//! The reference TS source's cross-tenant isolation logic (scope downgrade
-//! when per-user MCP tools are present) lives here as a documented hook but
-//! is not exercised until Phase 6 (plugins / MCP) lands.
+//! The reference TS source's cross-tenant isolation logic (scope
+//! downgrade when per-user MCP tools are present) lives here as a
+//! documented hook but is not exercised until MCP-scoped caching is
+//! wired in.
 
 use std::sync::Arc;
 
@@ -82,9 +83,9 @@ pub struct CachePolicy {
 impl CachePolicy {
     /// Build a policy from tenant tier + operator allowlist.
     ///
-    /// Phase 2 uses the global scope by default (Elena speaks directly to
-    /// Anthropic with no MCP tools in play). Phase 6 will introduce MCP-
-    /// aware scope downgrade.
+    /// Uses the global scope by default (Elena speaks directly to
+    /// Anthropic with no MCP tools in play). MCP-aware scope downgrade
+    /// is not yet wired in.
     #[must_use]
     pub fn new(tier: TenantTier, allowlist: CacheAllowlist) -> Self {
         let ttl_eligible =
@@ -102,8 +103,8 @@ impl CachePolicy {
 
     /// Whether this policy can emit any cache markers at all.
     ///
-    /// Always `true` under Phase 2 — the 5m ephemeral TTL is the fallback
-    /// for tiers below Pro. Kept as a method so callers can short-circuit
+    /// Always `true` today — the 5m ephemeral TTL is the fallback for
+    /// tiers below Pro. Kept as a method so callers can short-circuit
     /// marker placement when feature flags disable caching entirely.
     #[must_use]
     pub const fn is_enabled(&self) -> bool {
@@ -164,9 +165,9 @@ impl CachePolicy {
     /// Decide the index of the system block that should carry the system-
     /// level cache marker, if any.
     ///
-    /// Phase 2: the last system block gets the marker. Phase 6 will split
-    /// static vs. dynamic system-prompt blocks and mark only the static
-    /// prefix; that's beyond this phase's scope.
+    /// The last system block gets the marker. Splitting static vs.
+    /// dynamic system-prompt blocks (and marking only the static
+    /// prefix) is not yet supported.
     #[must_use]
     pub fn decide_system_marker(req: &LlmRequest) -> Option<usize> {
         if req.system.is_empty() { None } else { Some(req.system.len() - 1) }
@@ -194,6 +195,7 @@ mod tests {
             permissions: PermissionSet::default(),
             budget: BudgetLimits::default(),
             tier: TenantTier::Pro,
+            plan: None,
             metadata: std::collections::HashMap::new(),
         }
     }

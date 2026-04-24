@@ -13,6 +13,10 @@
 //!    Key Set from an issuer URL and verifies JWTs against the current
 //!    key material. Backward-compatible with static-key mode.
 
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 #![warn(missing_docs)]
 // Pedantic lints churn against this crate's natural style (proper-noun
 // heavy docs, cert/key paths, JWKS wire format). Suppress the noisy ones
@@ -32,10 +36,18 @@
 )]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod admin;
 pub mod jwks;
+pub mod jwt;
+pub mod scope;
 pub mod secret;
 pub mod tls;
 
+pub use admin::{
+    ADMIN_TOKEN_HEADER, TENANT_SCOPE_HEADER, require_admin_token, require_tenant_scope,
+};
 pub use jwks::{JwksError, JwksValidator, JwksValidatorConfig};
+pub use jwt::{ElenaJwtClaims, JwtAlgorithm, JwtConfig, JwtError, JwtValidator};
+pub use scope::{ct_eq_32, hash_scope_token};
 pub use secret::{CachedSecret, EnvSecretProvider, SecretError, SecretProvider, SecretRef};
 pub use tls::{TlsConfig, TlsError, build_client_config, build_server_config};

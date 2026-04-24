@@ -198,8 +198,9 @@ async fn run_single(
     call: ToolInvocation,
     ctx: ToolContext,
 ) -> Result<ToolOutput, ToolError> {
-    // Permission check. Deny → infra error. Ask → allow (Phase 3; Phase 5
-    // will route through a prompt channel).
+    // Permission check. Deny → infra error. Ask → allow (a prompt
+    // channel for routing approvals is not yet wired here; the loop's
+    // autonomy modes are the current pause-for-approval surface).
     let permission = tool.check_permission(&call.input, &ctx.tenant.permissions).await;
     match permission {
         elena_types::Permission::Allow { .. } => {}
@@ -209,10 +210,7 @@ async fn run_single(
         elena_types::Permission::Ask { .. } => {
             // PHASE5: route to prompt channel once the gateway lands. For now
             // we auto-allow and log at WARN so the audit trail captures it.
-            warn!(
-                tool = tool.name(),
-                "Permission::Ask auto-allowed in Phase 3 (no prompt channel yet)"
-            );
+            warn!(tool = tool.name(), "Permission::Ask auto-allowed (no prompt channel here)");
         }
     }
 
@@ -249,6 +247,7 @@ mod tests {
             permissions: PermissionSet::default(),
             budget: BudgetLimits::default(),
             tier: TenantTier::Pro,
+            plan: None,
             metadata: std::collections::HashMap::new(),
         }
     }

@@ -7,11 +7,15 @@
 //! tools run in parallel under a semaphore, write tools run serially,
 //! preserving invocation order in the returned results.
 //!
-//! Phase-6 plugin connectors register their actions directly into
+//! Plugin connectors register their actions directly into
 //! [`ToolRegistry`] via [`elena_plugins::PluginRegistry`], so plugin
 //! invocations reach the model as ordinary [`Tool`]s with no special case
 //! in the orchestrator.
 
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 

@@ -1,12 +1,12 @@
 //! `GET /v1/threads/:id/stream` — WebSocket upgrade for live turn streaming.
 
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use chrono::Utc;
 use elena_types::{
     AutonomyMode, ContentBlock, Message, MessageId, MessageKind, ModelId, RequestId, Role,
-    ThreadId, WorkRequest, WorkRequestKind, subjects,
+    StreamEnvelope, StreamEvent, ThreadId, WorkRequest, WorkRequestKind, subjects,
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -31,8 +31,8 @@ pub enum ClientFrame {
         /// Optional max-turn cap override.
         #[serde(default)]
         max_turns: Option<u32>,
-        /// Phase 7 — autonomy policy for this turn. Defaults to Moderate
-        /// if the client omits it.
+        /// Autonomy policy for this turn. Defaults to Moderate if the
+        /// client omits it.
         #[serde(default)]
         autonomy: AutonomyMode,
     },
@@ -53,23 +53,38 @@ pub enum GatewayFrame {
     },
 }
 
+/// X4 — Query params on the WS upgrade.
+#[derive(Debug, Default, Deserialize)]
+pub struct StreamQuery {
+    /// Last `StreamEnvelope.offset` the client successfully processed.
+    /// On reconnect the gateway replays persisted messages newer than
+    /// the corresponding point in the thread before joining the live
+    /// stream. Omitted on first-ever connect — clients have nothing
+    /// to replay.
+    #[serde(default)]
+    pub since: Option<u64>,
+}
+
 /// HTTP handler: upgrade `GET /v1/threads/:id/stream` to a WebSocket.
 pub async fn ws_upgrade(
     State(state): State<GatewayState>,
     AuthedTenant(tenant): AuthedTenant,
     Path(thread_id): Path<ThreadId>,
+    Query(query): Query<StreamQuery>,
     upgrade: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, GatewayError> {
-    Ok(upgrade.on_upgrade(move |socket| handle_socket(state, tenant, thread_id, socket)))
+    let since = query.since;
+    Ok(upgrade.on_upgrade(move |socket| handle_socket(state, tenant, thread_id, since, socket)))
 }
 
 async fn handle_socket(
     state: GatewayState,
     tenant: elena_types::TenantContext,
     thread_id: ThreadId,
+    since: Option<u64>,
     socket: WebSocket,
 ) {
-    if let Err(e) = run_socket(state, tenant, thread_id, socket).await {
+    if let Err(e) = run_socket(state, tenant, thread_id, since, socket).await {
         warn!(?e, %thread_id, "ws session ended with error");
     }
 }
@@ -78,9 +93,10 @@ async fn run_socket(
     state: GatewayState,
     tenant: elena_types::TenantContext,
     thread_id: ThreadId,
+    since: Option<u64>,
     socket: WebSocket,
 ) -> Result<(), GatewayError> {
-    info!(%thread_id, tenant = %tenant.tenant_id, "ws session opened");
+    info!(%thread_id, tenant = %tenant.tenant_id, since = ?since, "ws session opened");
 
     let (mut sink, mut stream) = socket.split();
 
@@ -89,14 +105,23 @@ async fn run_socket(
         .map_err(|e| GatewayError::Internal(format!("ack serde: {e}")))?;
     sink.send(WsMessage::Text(ack.into())).await.ok();
 
-    // Subscribe to the thread's event subject. NATS core pub/sub — fire and
-    // forget. Reconnecting clients miss anything that happened before this
-    // subscribe; that's by design (D-stream-ephemeral, plan).
-    let mut subscriber = state
-        .nats
-        .subscribe(subjects::thread_events(thread_id))
-        .await
-        .map_err(|e| GatewayError::Nats(format!("subscribe events: {e}")))?;
+    // X1 — subscribe to the local broadcast channel BEFORE replay so
+    // any live events published while we're reading Postgres are
+    // buffered in the broadcast channel and we send them after the
+    // replay batch. Subscribing first guarantees no live event is
+    // missed in the gap between replay-fetch and live-forward.
+    let mut events = crate::fanout::subscribe(&state.fanout, thread_id);
+
+    // X4 — Postgres replay. If the client provided `?since=<offset>`,
+    // synthesize replay envelopes from every persisted message in this
+    // thread newer than the message at-or-before `since`. Replay
+    // envelopes carry `offset = REPLAY_OFFSET (0)` so the client can
+    // distinguish them from live events.
+    if let Some(since) = since {
+        if let Err(e) = replay_since(&state, &tenant, thread_id, since, &mut sink).await {
+            warn!(?e, %thread_id, "replay failed; continuing with live stream only");
+        }
+    }
 
     loop {
         tokio::select! {
@@ -130,15 +155,26 @@ async fn run_socket(
                     }
                 }
             }
-            // Worker → gateway event.
-            event = subscriber.next() => {
-                let Some(event) = event else { break; };
-                let payload = String::from_utf8_lossy(&event.payload).into_owned();
-                // Phase-7 backpressure: a slow client shouldn't stall the
-                // whole worker fan-out. 500 ms is generous for a well-behaved
+            // Worker → gateway event (via local broadcast).
+            event = events.recv() => {
+                let payload = match event {
+                    Ok(p) => p,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // Slow consumer; broadcast dropped n messages
+                        // for us. Mirror the pre-X1 backpressure
+                        // posture: the client missed events, close
+                        // the session and let them reconnect.
+                        warn!(%thread_id, dropped = n, "ws subscriber lagged; closing session");
+                        break;
+                    }
+                };
+                // Backpressure: a slow client shouldn't stall the whole
+                // worker fan-out. 500 ms is generous for a well-behaved
                 // client on any realistic link; anything slower is blocking
-                // NATS redelivery and should be dropped.
-                let send = sink.send(WsMessage::Text(payload.into()));
+                // and should be dropped.
+                let payload_str = String::from_utf8_lossy(&payload).into_owned();
+                let send = sink.send(WsMessage::Text(payload_str.into()));
                 match tokio::time::timeout(std::time::Duration::from_millis(500), send).await {
                     Ok(Ok(())) => {}
                     Ok(Err(_)) => {
@@ -154,6 +190,10 @@ async fn run_socket(
         }
     }
 
+    // Drop the receiver before we ask the table to garbage-collect the
+    // entry — `maybe_release` only reaps when receiver_count == 0.
+    drop(events);
+    crate::fanout::maybe_release(&state.fanout, thread_id);
     info!(%thread_id, "ws session closed");
     Ok(())
 }
@@ -166,10 +206,10 @@ async fn handle_client_frame(
 ) -> Result<(), GatewayError> {
     match frame {
         ClientFrame::SendMessage { text, model, max_turns, autonomy } => {
-            // Phase 7 · A2: inject the workspace's global instructions as
-            // a system block. Missing workspace row, empty fragment, or
-            // DB error all degrade to "no guardrail" — we don't want an
-            // admin-API outage to stall user traffic.
+            // Inject the workspace's global instructions as a system
+            // block. Missing workspace row, empty fragment, or DB error
+            // all degrade to "no guardrail" — we don't want an admin-API
+            // outage to stall user traffic.
             let workspace_fragment = match state
                 .store
                 .workspaces
@@ -203,6 +243,90 @@ async fn handle_client_frame(
             Ok(())
         }
     }
+}
+
+/// X4 — Replay every persisted message in the thread (synthetic
+/// envelopes with `offset = REPLAY_OFFSET = 0`) and forward them to
+/// the client.
+///
+/// This is intentionally **coarse**: we don't have a per-event index
+/// in Postgres, only per-message rows. So `since` is treated as a
+/// "client missed something" trigger rather than a precise resume
+/// point — we replay the full message list. Most clients use this on
+/// reconnect; doing the full pass once costs no more than the
+/// existing `GET /v1/threads/{id}/messages` bootstrap path.
+///
+/// Each persisted Message becomes a small synthetic event sequence
+/// (`MessageStart` + `ToolUseComplete` or `ToolResult` per content block)
+/// that the renderer can apply incrementally — same shape the live
+/// stream emits, just with offset = 0.
+async fn replay_since(
+    state: &GatewayState,
+    tenant: &elena_types::TenantContext,
+    thread_id: ThreadId,
+    since: u64,
+    sink: &mut futures::stream::SplitSink<WebSocket, WsMessage>,
+) -> Result<(), GatewayError> {
+    let msgs = state
+        .store
+        .threads
+        .list_messages(tenant.tenant_id, thread_id, 1_000, None)
+        .await
+        .map_err(GatewayError::Store)?;
+    info!(%thread_id, since, replayed = msgs.len(), "x4 replay starting");
+    for msg in msgs {
+        for ev in synthesize_events(&msg) {
+            let envelope = StreamEnvelope::replay(ev);
+            let payload = match serde_json::to_string(&envelope) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(?e, "replay serde failed");
+                    continue;
+                }
+            };
+            if sink.send(WsMessage::Text(payload.into())).await.is_err() {
+                debug!(%thread_id, "client closed socket during replay");
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// X4 — Project a persisted [`Message`] back into a small
+/// `StreamEvent` sequence the renderer can apply. Best-effort: we
+/// emit the structural events (`MessageStart`, `ToolUseComplete`,
+/// `ToolResult`) but not the per-token deltas, because deltas weren't
+/// persisted.
+fn synthesize_events(msg: &Message) -> Vec<StreamEvent> {
+    let mut out = Vec::new();
+    if matches!(msg.kind, MessageKind::Assistant { .. }) {
+        out.push(StreamEvent::MessageStart { message_id: msg.id });
+    }
+    for block in &msg.content {
+        match block {
+            ContentBlock::ToolUse { id, name, input, .. } => {
+                out.push(StreamEvent::ToolUseComplete {
+                    id: *id,
+                    name: name.clone(),
+                    input: input.clone(),
+                });
+            }
+            ContentBlock::ToolResult { tool_use_id, is_error, .. } => {
+                out.push(StreamEvent::ToolResult { id: *tool_use_id, is_error: *is_error });
+            }
+            ContentBlock::Text { .. }
+            | ContentBlock::Thinking { .. }
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::Image { .. } => {
+                // Text + thinking content lives in Postgres; clients
+                // refetch via REST when they need to re-render the
+                // body. Replay focuses on structural events the
+                // renderer's incremental state machine consumes.
+            }
+        }
+    }
+    out
 }
 
 fn error_frame(err: &GatewayError) -> WsMessage {
@@ -317,7 +441,7 @@ mod tests {
         assert!(serde_json::from_str::<ClientFrame>(&raw).is_err());
     }
 
-    // ----- Phase 7 · D3: workspace guardrail injection -----
+    // ----- Workspace guardrail injection -----
 
     use std::collections::HashMap;
 
@@ -336,6 +460,7 @@ mod tests {
             permissions: PermissionSet::default(),
             budget: BudgetLimits::DEFAULT_PRO,
             tier: TenantTier::Pro,
+            plan: None,
             metadata: HashMap::new(),
         }
     }

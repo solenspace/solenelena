@@ -1,11 +1,11 @@
-//! Model-routing configuration (Phase 4).
+//! Model-routing configuration.
 //!
 //! Only one knob today: how many cascade escalations can happen per turn
 //! before the loop accepts the current tier's output as-is.
 
 use serde::Deserialize;
 
-/// Phase-4 router settings.
+/// Router settings.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RouterConfig {
     /// Maximum reactive tier escalations per turn (e.g. `Fast → Standard →

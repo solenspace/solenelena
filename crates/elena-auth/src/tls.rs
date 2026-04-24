@@ -1,6 +1,6 @@
 //! TLS / mTLS config builders.
 //!
-//! Phase 7 uses [`build_client_config`] on the worker side when dialing
+//! [`build_client_config`] is used on the worker side when dialing
 //! plugin sidecars, and [`build_server_config`] on the sidecar/connector
 //! side when accepting. Both support optional client-cert verification
 //! (the "m" in mTLS) via a CA bundle.
@@ -93,8 +93,8 @@ pub fn build_client_config(cfg: &TlsConfig) -> Result<Arc<ClientConfig>, TlsErro
     install_default_crypto_provider();
 
     // v1.0 requires the operator to pin `client_ca_file` explicitly (the
-    // K8s/internal-PKI case). A "use system roots" mode lands with the
-    // Phase-7 tail work once `rustls-native-certs` is wired in —
+    // K8s/internal-PKI case). A "use system roots" mode is not yet
+    // supported; it will arrive once `rustls-native-certs` is wired in —
     // documented in the runbook.
     let roots = match cfg.client_ca_file.as_deref() {
         Some(path) => load_roots(path)?,

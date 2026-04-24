@@ -41,7 +41,7 @@ pub async fn run_consumer(
         .map_err(|e| WorkerError::Nats(format!("ensure stream {stream_name}: {e}")))?;
 
     let durable = cfg.durable_name.clone().unwrap_or_else(|| DEFAULT_DURABLE_NAME.to_owned());
-    // Phase-7 NATS tuning: `max_ack_pending` gives the consumer twice the
+    // NATS tuning: `max_ack_pending` gives the consumer twice the
     // worker's concurrency budget so the pull pipeline stays full even
     // when one loop is momentarily stuck. `ack_wait` = 120 s is generous
     // enough for long tool calls + provider slowdown.

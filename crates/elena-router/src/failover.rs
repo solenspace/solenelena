@@ -20,7 +20,7 @@
 //!
 //! Hooks into Elena's cascade-escalation path: when a provider's breaker
 //! is open, the router picks the next-tier provider for the session.
-//! Integration sits in [`crate::router::ModelRouter`] (Phase-7 tail).
+//! Integration sits in [`crate::router::ModelRouter`].
 
 use std::{
     sync::{

@@ -12,6 +12,8 @@
 //! Mirrors the path Phase 6 ships, minus the LLM round-trip (which is the
 //! `bins/elena-phase6-smoke` job).
 
+// B1.6 — soak deprecated TenantTier warnings until the type is removed.
+#![allow(deprecated)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::print_stderr)]
 
 use std::collections::HashMap;
@@ -55,6 +57,7 @@ fn make_ctx() -> (ToolContext, mpsc::Receiver<StreamEvent>) {
         permissions: PermissionSet::default(),
         budget: BudgetLimits::default(),
         tier: TenantTier::Pro,
+        plan: None,
         metadata: HashMap::new(),
     };
     let ctx = ToolContext {

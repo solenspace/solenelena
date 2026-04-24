@@ -1,9 +1,9 @@
 //! `GET /metrics` — Prometheus text endpoint.
 //!
-//! Phase-7 opens this route publicly (no auth) for scrape by the cluster's
-//! Prometheus instance. Operator wraps the gateway behind an ingress that
-//! restricts `/metrics` to the monitoring namespace in production — Elena
-//! itself does not gate the endpoint (standard pattern for Prom exposition).
+//! This route is open (no auth) for scrape by the cluster's Prometheus
+//! instance. Operator wraps the gateway behind an ingress that restricts
+//! `/metrics` to the monitoring namespace in production — Elena itself
+//! does not gate the endpoint (standard pattern for Prom exposition).
 //!
 //! Body is `text/plain; version=0.0.4; charset=utf-8` exactly as Prometheus
 //! expects.

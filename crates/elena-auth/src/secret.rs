@@ -2,8 +2,8 @@
 //!
 //! Callers hold an `Arc<dyn SecretProvider>` and ask for secrets by name.
 //! The provider is the integration point: env vars, Vault, KMS,
-//! Kubernetes secret-mount, whatever. Phase-7 ships the env-backed impl
-//! (v1.0 minimum) with Vault/KMS opt-in via cargo features.
+//! Kubernetes secret-mount, whatever. The env-backed impl ships by
+//! default (v1.0 minimum) with Vault/KMS opt-in via cargo features.
 //!
 //! Secrets are wrapped in [`secrecy::SecretString`] so they don't leak
 //! through `Debug` impls or default log formatters.

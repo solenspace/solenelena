@@ -54,6 +54,30 @@ pub async fn post_approvals(
         });
     }
 
+    // S4 — replay protection. The loop writes the pending tool_use_id
+    // set on pause; we reject any decision whose id isn't in the
+    // current set. A missing set (None) means the loop isn't currently
+    // paused — almost certainly a stale client retry; reject so the
+    // worker doesn't act on the message before re-publishing
+    // ResumeFromApproval.
+    let pending =
+        state.store.cache.load_pending_approvals(thread_id).await.map_err(GatewayError::Store)?;
+    let Some(pending) = pending else {
+        return Err(GatewayError::BadRequest {
+            message: "thread is not currently awaiting approvals".into(),
+        });
+    };
+    for decision in &body.approvals {
+        if !pending.contains(&decision.tool_use_id) {
+            return Err(GatewayError::BadRequest {
+                message: format!(
+                    "approval references unknown tool_use_id {} (not in current pause window)",
+                    decision.tool_use_id
+                ),
+            });
+        }
+    }
+
     state
         .store
         .approvals

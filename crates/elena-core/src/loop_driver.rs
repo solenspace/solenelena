@@ -90,6 +90,13 @@ async fn drive_loop(
     // Resume from a checkpoint if one exists (we just claimed, so the
     // checkpoint is either stale-from-this-worker or a recovery of a
     // crashed predecessor's progress).
+    //
+    // C4 — selective merge. Phase / pending tool calls / turn count /
+    // usage / recovery / last_turn_had_tools come from the checkpoint
+    // (the loop's actual progress so far). Autonomy / system_prompt /
+    // model come from the *fresh* request so an operator who tightens
+    // policy between pause and resume sees the change applied to the
+    // resuming turn rather than getting frozen on the pre-pause value.
     match load_loop_state(&deps.store.cache, state.thread_id).await {
         Ok(Some(resumed)) => {
             info!(
@@ -97,7 +104,16 @@ async fn drive_loop(
                 phase = resumed.phase.tag(),
                 "resuming from checkpoint"
             );
-            state = resumed;
+            state.phase = resumed.phase;
+            state.pending_tool_calls = resumed.pending_tool_calls;
+            state.turn_count = resumed.turn_count;
+            state.usage = resumed.usage;
+            state.recovery = resumed.recovery;
+            state.last_turn_had_tools = resumed.last_turn_had_tools;
+            state.prior_thread_tokens = resumed.prior_thread_tokens;
+            // Deliberately preserved from `initial`: autonomy,
+            // system_prompt, model, model_tier, provider,
+            // max_tokens_per_turn, max_turns, tenant.
         }
         Ok(None) => {
             // No checkpoint — start from `initial`.
@@ -107,7 +123,7 @@ async fn drive_loop(
         }
     }
 
-    // Phase 7 observability: one `turns_total` increment per run, wall-clock
+    // Observability: one `turns_total` increment per run, wall-clock
     // histogram labelled by outcome.
     deps.metrics.turns_total.inc();
     deps.metrics.loops_in_flight.with_label_values(&[worker_id.as_str()]).inc();
@@ -127,6 +143,24 @@ async fn drive_loop(
                 // pending list populated).
                 if let Err(e) = save_loop_state(&deps.store.cache, &state).await {
                     warn!(?e, "save_loop_state before pause failed");
+                }
+                // S4 — denormalize the pending tool_use_id set so the
+                // gateway's approvals POST can reject decisions whose
+                // ID isn't in the current pause window. TTL matches the
+                // pause deadline so the key reaps automatically if the
+                // worker crashes.
+                if let crate::state::LoopPhase::AwaitingApproval { invocations, .. } = &state.phase
+                {
+                    let ids: std::collections::HashSet<elena_types::ToolCallId> =
+                        invocations.iter().map(|inv| inv.id).collect();
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let ttl_ms =
+                        u64::try_from(deadline_ms.saturating_sub(now_ms).max(1)).unwrap_or(1);
+                    if let Err(e) =
+                        deps.store.cache.save_pending_approvals(state.thread_id, &ids, ttl_ms).await
+                    {
+                        warn!(?e, "save_pending_approvals failed");
+                    }
                 }
                 break Exit::Paused { deadline_ms };
             }
@@ -159,12 +193,13 @@ async fn drive_loop(
                 .with_label_values(&[outcome_label])
                 .observe(turn_start.elapsed().as_secs_f64());
 
-            // Phase 4: fire-and-forget episode recording before cleanup. Errors
+            // Fire-and-forget episode recording before cleanup. Errors
             // are swallowed by `EpisodicMemory::record_episode` itself.
             spawn_episode_record(&deps, &state, &terminal);
 
             // Best-effort cleanup. Errors don't block termination.
             let _ = drop_loop_state(&deps.store.cache, state.thread_id).await;
+            let _ = deps.store.cache.clear_pending_approvals(state.thread_id).await;
             let _ = deps.store.cache.release_thread(state.thread_id, &worker_id).await;
 
             // Always emit the final Done event — phases don't emit it themselves;
@@ -176,11 +211,13 @@ async fn drive_loop(
 }
 
 fn spawn_episode_record(deps: &Arc<LoopDeps>, state: &LoopState, terminal: &Terminal) {
-    let outcome = if terminal.is_success() {
-        elena_types::Outcome::Completed
-    } else {
-        elena_types::Outcome::Failed { terminal: terminal.clone() }
-    };
+    // C9 — gate noise: failed runs pollute future recall results
+    // without contributing useful signal. Successful threads (text-only
+    // or with tools) get recorded.
+    if !terminal.is_success() {
+        return;
+    }
+    let outcome = elena_types::Outcome::Completed;
     let deps = Arc::clone(deps);
     let tenant_id = state.tenant.tenant_id;
     let workspace_id = state.tenant.workspace_id;

@@ -19,13 +19,16 @@
 //!    │                                │ ◀──── FinalResult ── ──── ──── │
 //!    │ ◀── tool_result               │                                  │
 //! ```
-//!
-//! Phase-6 scope is deliberately small: no mTLS, no per-tenant credential
-//! injection, no sandboxing, no metrics. Phase 7 hardens those.
+
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 
 pub mod action_tool;
 pub mod client;
 pub mod config;
+pub mod embedded;
 pub mod error;
 pub mod health;
 pub mod id;
@@ -36,6 +39,7 @@ pub mod registry;
 pub use action_tool::PluginActionTool;
 pub use client::PluginClient;
 pub use config::PluginsConfig;
+pub use embedded::{EmbeddedExecutor, PluginBackend};
 pub use error::PluginError;
 pub use health::{HealthMonitor, HealthState};
 pub use id::{PluginId, PluginIdError};

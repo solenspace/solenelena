@@ -1,14 +1,18 @@
 //! Streaming LLM client for Elena.
 //!
-//! Phase 2 scope: Anthropic Messages API with API-key auth, SSE streaming,
-//! retry with exponential backoff, and prompt-cache marker placement. Every
-//! public async fn takes a [`tokio_util::sync::CancellationToken`] for
-//! cooperative cancellation end-to-end.
+//! Scope: Anthropic Messages API with API-key auth, SSE streaming,
+//! retry with exponential backoff, and prompt-cache marker placement.
+//! Every public async fn takes a [`tokio_util::sync::CancellationToken`]
+//! for cooperative cancellation end-to-end.
 //!
 //! The public API surfaces via re-exports below; internal modules
 //! (`events`, `assembler`, `sse`) are implementation detail and subject to
 //! change.
 
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 

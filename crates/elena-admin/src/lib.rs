@@ -12,6 +12,10 @@
 //! planned for v1.0.x; for v1.0 the expectation is "internal network only
 //! + short-lived operator sessions."
 
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 #![warn(missing_docs)]
 #![allow(
     clippy::doc_markdown,
@@ -30,6 +34,8 @@
 
 pub mod auth;
 pub mod health;
+pub mod plan_assignments;
+pub mod plans;
 pub mod plugins;
 pub mod router;
 pub mod state;
