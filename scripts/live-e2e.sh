@@ -79,7 +79,8 @@ mint_jwt() {
 
 run_turn() {
   # args: thread_id jwt prompt [autonomy] [model] [timeout_ms]
-  WS_URL="${WS_BASE}/v1/threads/$1/stream?token=$2" \
+  WS_URL="${WS_BASE}/v1/threads/$1/stream" \
+  JWT="$2" \
   PROMPT="$3" \
   AUTONOMY="${4:-yolo}" \
   MODEL="${5:-llama-3.3-70b-versatile}" \
@@ -227,13 +228,17 @@ BAD_SIG=$(mint_jwt "$TENANT" "$USER" "$WS" "pro" "3600" "elena" "elena-clients" 
 R=$(curlcode -X POST -H "authorization: Bearer $BAD_SIG" -H 'content-type: application/json' -d '{}' "$BASE/v1/threads")
 [[ "$R" == "401" ]] && ok "23. /v1/threads bad signature → 401" || fail "23. bad sig got $R"
 
-# 24 WS via ?token= query param
-WS_OK=$(WS_URL="$WS_BASE/v1/threads/$THREAD/stream?token=$JWT" PROMPT="ok" TIMEOUT=8000 \
-  node "$SCRIPT_DIR/live-e2e-runturn.js" 2>/dev/null | jq -r '.reason // .errors[0].kind // "?"')
-case "$WS_OK" in
-  completed|max_turns|model_error) ok "24. WS upgrade via ?token= query param: reason=$WS_OK" ;;
-  *) fail "24. WS ?token= got reason=$WS_OK" ;;
-esac
+# 24 WS via ?token= query param — S7 dropped this fallback; expect 401
+WS_DROPPED=$(node -e "
+  const WebSocket = require('ws');
+  const ws = new WebSocket('$WS_BASE/v1/threads/$THREAD/stream?token=$JWT');
+  ws.on('error', (e) => { console.log(String(e).includes('401') ? '401' : 'other:' + e.message); process.exit(0); });
+  ws.on('open', () => { console.log('opened'); ws.close(); process.exit(0); });
+  setTimeout(() => { console.log('timeout'); process.exit(0); }, 5000);
+" 2>/dev/null)
+[[ "$WS_DROPPED" == "401" ]] \
+  && ok "24. WS ?token= URL param rejected (S7) → 401" \
+  || fail "24. ?token= rejection got '$WS_DROPPED'"
 
 # 25 approvals empty array → 400
 R=$(curlcode -X POST -H "authorization: Bearer $JWT" -H 'content-type: application/json' -d '{"approvals":[]}' "$BASE/v1/threads/$THREAD/approvals")
@@ -257,10 +262,10 @@ REASON5=$(echo "$T5" | jq -r '.reason // "?"' 2>/dev/null)
 
 # 29 cancel mid-stream
 CANCEL_THREAD=$(curl -fsS -X POST -H "authorization: Bearer $JWT" -H "content-type: application/json" -d '{"title":"cancel"}' "$BASE/v1/threads" 2>/dev/null | jq -r '.thread_id')
-CANCEL_OUT=$(WS_URL="$WS_BASE/v1/threads/$CANCEL_THREAD/stream?token=$JWT" \
+CANCEL_OUT=$(WS_URL="$WS_BASE/v1/threads/$CANCEL_THREAD/stream" JWT="$JWT" \
   node -e "
   const WebSocket = require('ws');
-  const ws = new WebSocket(process.env.WS_URL);
+  const ws = new WebSocket(process.env.WS_URL, ['elena.bearer.' + process.env.JWT]);
   let done = false;
   const t = setTimeout(() => { if (!done) { console.log('timeout'); ws.terminate(); process.exit(0); } }, 20000);
   ws.on('open', () => {
