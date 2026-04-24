@@ -9,8 +9,8 @@
 //!   - the final body matches `{"reversed":"olleh"}`
 //!   - the plugin's health gauge flipped to `Up`
 //!
-//! Mirrors the path Phase 6 ships, minus the LLM round-trip (which is the
-//! `bins/elena-phase6-smoke` job).
+//! Mirrors the production registry → gRPC path, minus the LLM round-trip
+//! (which is exercised end-to-end by `bins/elena-phase7-smoke`).
 
 // B1.6 — soak deprecated TenantTier warnings until the type is removed.
 #![allow(deprecated)]
