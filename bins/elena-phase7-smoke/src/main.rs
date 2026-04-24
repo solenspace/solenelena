@@ -25,6 +25,10 @@
 //! Exit 0 ⇒ Elena v1.0 surface is live. Exit 1 ⇒ one of the assertions
 //! above failed.
 
+// B1.6 — TenantTier + BudgetLimits::DEFAULT_FREE/PRO + default_budget_for_tier
+// are #[deprecated] during the JWT-claim transition window. Remove this
+// crate-level allow once the deprecated items are deleted.
+#![allow(deprecated)]
 #![allow(
     clippy::print_stdout,
     clippy::print_stderr,
@@ -46,10 +50,10 @@ use elena_config::{
     PostgresConfig, RateLimitsConfig, RedisConfig, RouterConfig, TierEntry, TierModels,
 };
 use elena_connector_echo::EchoConnector;
+use elena_context::EpisodicMemory;
 use elena_context::{ContextManager, ContextManagerOptions, NullEmbedder};
 use elena_gateway::{GatewayConfig, GatewayState, JwtAlgorithm, JwtConfig, build_router};
 use elena_llm::{AnthropicAuth, AnthropicClient, CacheAllowlist, CachePolicy};
-use elena_memory::EpisodicMemory;
 use elena_plugins::{PluginRegistry, PluginsConfig, proto::pb};
 use elena_router::ModelRouter;
 use elena_store::Store;
@@ -242,6 +246,7 @@ async fn run(mode: RunMode) -> anyhow::Result<()> {
             audience: "elena-phase7-clients".into(),
             leeway_seconds: 60,
         },
+        cors: elena_gateway::CorsConfig::default(),
     };
 
     let gateway_state =
@@ -400,9 +405,10 @@ async fn run(mode: RunMode) -> anyhow::Result<()> {
         match msg {
             tokio_tungstenite::tungstenite::Message::Text(text) => {
                 let v: serde_json::Value = serde_json::from_str(&text)?;
-                match v.get("event").and_then(|v| v.as_str()) {
+                let ev = inner_event(&v);
+                match ev.get("event").and_then(|v| v.as_str()) {
                     Some("text_delta") => {
-                        if let Some(d) = v.get("delta").and_then(|v| v.as_str()) {
+                        if let Some(d) = ev.get("delta").and_then(|v| v.as_str()) {
                             assistant_text.push_str(d);
                             print!("{d}");
                             std::io::stdout().flush().ok();
@@ -502,6 +508,16 @@ async fn run(mode: RunMode) -> anyhow::Result<()> {
     //    Open a second thread with autonomy=cautious, send the same
     //    tool-triggering prompt, expect an `awaiting_approval` event,
     //    POST an `Allow` decision, and verify the tool runs to completion.
+    //
+    //    Wiremock mode can't drive D2: the canned transcript is one
+    //    tool_use + one text, both consumed by the happy-path turn
+    //    above. A second thread would get the text response on call 1
+    //    and never propose a tool. Skip when there's no real provider.
+    if matches!(mode, RunMode::Mock) {
+        eprintln!("elena-phase7-smoke: D2 skipped (wiremock mode — needs real LLM)");
+        eprintln!("elena-phase7-smoke: PASS (wiremock subset)");
+        return Ok(());
+    }
     eprintln!("elena-phase7-smoke: D2 — Cautious-mode approval round trip");
     let cautious_thread = reqwest_like_create_thread(&listen_addr, &token).await?;
     let cautious_thread_id = cautious_thread.thread_id;
@@ -544,20 +560,21 @@ async fn run(mode: RunMode) -> anyhow::Result<()> {
         let msg = msg?;
         if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
             let v: serde_json::Value = serde_json::from_str(&text)?;
-            if v.get("event").and_then(|e| e.as_str()) == Some("awaiting_approval") {
-                if let Some(arr) = v.get("pending").and_then(|p| p.as_array()) {
+            let ev = inner_event(&v);
+            if ev.get("event").and_then(|e| e.as_str()) == Some("awaiting_approval") {
+                if let Some(arr) = ev.get("pending").and_then(|p| p.as_array()) {
                     for entry in arr {
                         if let Some(id) = entry.get("tool_use_id").and_then(|i| i.as_str()) {
                             pending_tool_use_ids.push(id.to_owned());
                         }
                     }
                 }
-            } else if v.get("event").and_then(|e| e.as_str()) == Some("done") {
+            } else if ev.get("event").and_then(|e| e.as_str()) == Some("done") {
                 anyhow::bail!(
                     "Cautious turn ended with `done` before pausing — the model never \
                      proposed a tool call (got: {text})"
                 );
-            } else if v.get("event").and_then(|e| e.as_str()) == Some("error") {
+            } else if ev.get("event").and_then(|e| e.as_str()) == Some("error") {
                 anyhow::bail!("error event in cautious turn: {text}");
             }
         }
@@ -610,9 +627,10 @@ async fn run(mode: RunMode) -> anyhow::Result<()> {
         let msg = msg?;
         if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
             let v: serde_json::Value = serde_json::from_str(&text)?;
-            match v.get("event").and_then(|e| e.as_str()) {
+            let ev = inner_event(&v);
+            match ev.get("event").and_then(|e| e.as_str()) {
                 Some("text_delta") => {
-                    if let Some(d) = v.get("delta").and_then(|v| v.as_str()) {
+                    if let Some(d) = ev.get("delta").and_then(|v| v.as_str()) {
                         cautious_assistant_text.push_str(d);
                     }
                 }
@@ -628,7 +646,7 @@ async fn run(mode: RunMode) -> anyhow::Result<()> {
                             "cautious smoke exceeded 10 approval rounds — model may be looping"
                         );
                     }
-                    let ids: Vec<String> = v
+                    let ids: Vec<String> = ev
                         .get("pending")
                         .and_then(|p| p.as_array())
                         .map(|arr| {
@@ -768,6 +786,17 @@ async fn reqwest_like_create_thread(
 /// Extract the integer value of a simple Prometheus counter line
 /// (`<metric_name>{labels} <value>` or `<metric_name> <value>`). Returns 0
 /// when the counter is absent.
+/// Peel the X4 [`StreamEnvelope`] wrapper (`{"offset":N,"event":{...}}`)
+/// if present, otherwise return the value as-is. Lets a single match
+/// arm handle both wrapped stream events and the unwrapped
+/// `session_started` ack the gateway sends on connect.
+fn inner_event(v: &serde_json::Value) -> &serde_json::Value {
+    match (v.get("offset"), v.get("event")) {
+        (Some(_), Some(inner)) if inner.is_object() => inner,
+        _ => v,
+    }
+}
+
 fn extract_counter(body: &str, name: &str) -> u64 {
     let prefix_unlabeled = format!("{name} ");
     let prefix_labeled = format!("{name}{{");
@@ -814,6 +843,7 @@ async fn build_llm(
                 request_timeout_ms: Some(60_000),
                 connect_timeout_ms: 10_000,
                 max_attempts: 3,
+                pool_max_idle_per_host: 64,
             };
             let client = Arc::new(AnthropicClient::new(
                 &cfg,
@@ -824,6 +854,7 @@ async fn build_llm(
                 fast: TierEntry {
                     provider: "anthropic".into(),
                     model: ModelId::new("claude-haiku-4-5-20251001"),
+                    max_output_tokens: None,
                 },
                 ..TierModels::default()
             };
@@ -836,14 +867,23 @@ async fn build_llm(
                 request_timeout_ms: Some(60_000),
                 connect_timeout_ms: 10_000,
                 max_attempts: 3,
+                pool_max_idle_per_host: 64,
             };
             let client = Arc::new(OpenAiCompatClient::new("groq", &cfg)?);
             mux.register("groq", client as Arc<dyn LlmClient>);
             let model = ModelId::new("llama-3.3-70b-versatile");
             let t = TierModels {
-                fast: TierEntry { provider: "groq".into(), model: model.clone() },
-                standard: TierEntry { provider: "groq".into(), model: model.clone() },
-                premium: TierEntry { provider: "groq".into(), model },
+                fast: TierEntry {
+                    provider: "groq".into(),
+                    model: model.clone(),
+                    max_output_tokens: None,
+                },
+                standard: TierEntry {
+                    provider: "groq".into(),
+                    model: model.clone(),
+                    max_output_tokens: None,
+                },
+                premium: TierEntry { provider: "groq".into(), model, max_output_tokens: None },
             };
             (t, None)
         }
@@ -854,6 +894,7 @@ async fn build_llm(
                 request_timeout_ms: Some(60_000),
                 connect_timeout_ms: 10_000,
                 max_attempts: 3,
+                pool_max_idle_per_host: 64,
             };
             let client = Arc::new(OpenAiCompatClient::new("openrouter", &cfg)?);
             mux.register("openrouter", client as Arc<dyn LlmClient>);
@@ -861,9 +902,21 @@ async fn build_llm(
                 .unwrap_or_else(|_| "meta-llama/llama-3.3-70b-instruct:free".to_owned());
             let model = ModelId::new(&model_name);
             let t = TierModels {
-                fast: TierEntry { provider: "openrouter".into(), model: model.clone() },
-                standard: TierEntry { provider: "openrouter".into(), model: model.clone() },
-                premium: TierEntry { provider: "openrouter".into(), model },
+                fast: TierEntry {
+                    provider: "openrouter".into(),
+                    model: model.clone(),
+                    max_output_tokens: None,
+                },
+                standard: TierEntry {
+                    provider: "openrouter".into(),
+                    model: model.clone(),
+                    max_output_tokens: None,
+                },
+                premium: TierEntry {
+                    provider: "openrouter".into(),
+                    model,
+                    max_output_tokens: None,
+                },
             };
             (t, None)
         }
@@ -876,6 +929,7 @@ async fn build_llm(
                 request_timeout_ms: Some(60_000),
                 connect_timeout_ms: 10_000,
                 max_attempts: 3,
+                pool_max_idle_per_host: 64,
             };
             let client = Arc::new(AnthropicClient::new(
                 &cfg,
@@ -886,6 +940,7 @@ async fn build_llm(
                 fast: TierEntry {
                     provider: "anthropic".into(),
                     model: ModelId::new("claude-haiku-4-5-20251001"),
+                    max_output_tokens: None,
                 },
                 ..TierModels::default()
             };
