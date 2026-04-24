@@ -21,7 +21,10 @@ pub fn admin_router(state: AdminState) -> Router {
     let token_for_middleware = state.admin_token.clone();
     Router::new()
         .route("/tenants", post(tenants::create_tenant))
-        .route("/tenants/{id}", get(tenants::get_tenant))
+        .route(
+            "/tenants/{id}",
+            get(tenants::get_tenant).delete(tenants::delete_tenant),
+        )
         .route("/tenants/{id}/budget", patch(tenants::update_budget))
         .route("/tenants/{id}/allowed-plugins", patch(tenants::update_allowed_plugins))
         .route("/tenants/{id}/admin-scope", put(tenants::set_admin_scope))
@@ -42,7 +45,10 @@ pub fn admin_router(state: AdminState) -> Router {
                 .delete(plan_assignments::delete_assignment),
         )
         .route("/workspaces", post(workspaces::upsert_workspace))
-        .route("/workspaces/{id}", get(workspaces::get_workspace))
+        .route(
+            "/workspaces/{id}",
+            get(workspaces::get_workspace).delete(workspaces::delete_workspace),
+        )
         .route("/workspaces/{id}/instructions", patch(workspaces::update_instructions))
         .route("/workspaces/{id}/allowed-plugins", patch(workspaces::update_allowed_plugins))
         .route("/plugins", get(plugins::list_registered))

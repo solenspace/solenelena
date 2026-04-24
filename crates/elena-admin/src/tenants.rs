@@ -164,6 +164,35 @@ pub async fn create_tenant(
         .into_response()
 }
 
+/// `DELETE /admin/v1/tenants/:id` — drop the tenant and every row
+/// scoped to it. Cascades via Postgres `ON DELETE CASCADE` (see
+/// `crates/elena-store/src/tenant.rs::TenantStore::delete_tenant`).
+///
+/// Idempotent: returns `204 No Content` whether or not a row existed,
+/// so operator retries are safe. Tenant-scope-gated like every other
+/// `/admin/v1/tenants/:id/*` route.
+///
+/// Surfaced as a need by the tri-tenant fire-test
+/// (`bins/elena-tri-tenant-firetest`); previously every test run left
+/// orphan tenants + workspaces + plans behind because no admin-API
+/// path existed to drop them.
+pub async fn delete_tenant(
+    State(state): State<AdminState>,
+    Path(id): Path<TenantId>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(s) = require_tenant_scope(&state.store, id, &headers).await {
+        return s.into_response();
+    }
+    match state.store.tenants.delete_tenant(id).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            tracing::error!(?e, %id, "delete_tenant failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
 /// `GET /admin/v1/tenants/:id` — fetch a tenant by id.
 pub async fn get_tenant(
     State(state): State<AdminState>,

@@ -192,6 +192,47 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    /// Delete a workspace and every thread inside it (which cascades
+    /// to `messages` + `thread_approvals` + `thread_usage` via the
+    /// `threads` FK chain). Tenant scope is enforced — pass the JWT's
+    /// `tenant_id` to make sure cross-tenant deletes can't slip through.
+    ///
+    /// Returns `true` when a row was deleted, `false` when the
+    /// workspace did not exist for that tenant. Idempotent — repeating
+    /// the call is a no-op.
+    ///
+    /// `threads.workspace_id` is not a FK (workspaces are app-defined
+    /// scopes that can pre-date thread creation), so the thread purge
+    /// is explicit. Wrapped in a transaction so a failure mid-cascade
+    /// rolls back cleanly.
+    pub async fn delete(
+        &self,
+        tenant_id: TenantId,
+        workspace_id: WorkspaceId,
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.pool.begin().await.map_err(classify_sqlx)?;
+        // Threads (and their cascading messages / approvals / usage)
+        // first, then the workspace row itself.
+        sqlx::query(
+            "DELETE FROM threads WHERE tenant_id = $1 AND workspace_id = $2",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(workspace_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(classify_sqlx)?;
+        let res = sqlx::query(
+            "DELETE FROM workspaces WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(workspace_id.as_uuid())
+        .bind(tenant_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(classify_sqlx)?;
+        tx.commit().await.map_err(classify_sqlx)?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// List all workspaces for a tenant, ordered by creation time.
     pub async fn list_by_tenant(
         &self,

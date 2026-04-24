@@ -53,12 +53,18 @@ use tracing::info;
 #[derive(Debug, Clone, Parser)]
 #[command(version, about = "Elena tri-tenant fire-test (Solen + Hannlys + Omnii)")]
 struct Args {
-    /// Concurrent thread-loops per tenant. Total = 3 × this.
-    #[arg(long, default_value_t = 10)]
+    /// Concurrent thread-loops per tenant. Total = 3 × this. Default
+    /// 50 keeps the macOS ephemeral-port range (~16k) under the
+    /// pressure cap; pushing past 100 reliably exhausts the local
+    /// TIME_WAIT pool and the post-run cleanup DELETE can't dial back
+    /// to the in-process gateway. Override with explicit value if
+    /// you've raised `net.inet.ip.portrange.first` (macOS) or
+    /// `net.ipv4.ip_local_port_range` (Linux).
+    #[arg(long, default_value_t = 50)]
     threads_per_tenant: usize,
 
     /// How long the saturation phase runs, in seconds.
-    #[arg(long, default_value_t = 60)]
+    #[arg(long, default_value_t = 90)]
     duration_secs: u64,
 
     /// Where to write the markdown report.
@@ -142,7 +148,11 @@ async fn run(args: &Args) -> anyhow::Result<report::Report> {
     );
 
     eprintln!("firetest: running assertions…");
-    let results = assertions::check_all(&env, &provisioned, &stats).await;
+    let mut results = assertions::check_all(&env, &provisioned, &stats).await;
+
+    eprintln!("firetest: cleaning up via DELETE /admin/v1/tenants/:id…");
+    results.push(workload::cleanup_and_verify(&env, &provisioned).await);
+
     let report = report::Report {
         args: args.clone(),
         provisioned: provisioned.summary(),

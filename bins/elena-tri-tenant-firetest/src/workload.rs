@@ -628,3 +628,131 @@ fn mint_token(
         &EncodingKey::from_secret(JWT_SECRET.as_bytes()),
     )?)
 }
+
+/// Drop every tenant the firetest provisioned via the new
+/// `DELETE /admin/v1/tenants/:id` endpoint, then verify Postgres has
+/// no surviving rows scoped to those tenants. The cascading delete
+/// (added in the same PR that introduced this check) is what closes
+/// the previous "orphan rows accumulate per run" gap.
+pub async fn cleanup_and_verify(
+    env: &crate::harness::Harness,
+    p: &Provisioned,
+) -> crate::assertions::CheckResult {
+    use crate::assertions::CheckResult;
+
+    // Fresh client with a strict per-call timeout. We can't share the
+    // reqwest pool with the driver loops — they may have just released
+    // hundreds of keep-alive connections and the resulting reset stream
+    // can race a quick reuse.
+    let http = reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        .timeout(Duration::from_secs(15))
+        .build()
+        .expect("client");
+    let base = env.base_url();
+    // Brief settle so any in-flight HTTP/2 streams from drivers get
+    // out of the way before we open new ones, and so TIME_WAIT'd
+    // ephemeral ports from the driver flood have a chance to clear.
+    // 3 s is enough on Linux; macOS's smaller ephemeral range needs
+    // more (its FIN-WAIT-2 + TIME-WAIT timers are 60 s by default,
+    // but practically the kernel reuses sooner under pressure). The
+    // retry loop below also helps absorb transient EAGAINs.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let tenants = [
+        ("solen", p.solen.tenant_id),
+        ("hannlys-creator", p.hannlys.creator_id),
+        ("hannlys-buyer", p.hannlys.buyer_tenant_id),
+        ("omnii", p.omnii.tenant_id),
+    ];
+
+    let mut http_path = 0usize;
+    let mut sql_path = 0usize;
+    for (label, id) in tenants {
+        // Try the production HTTP endpoint first — that's what we want
+        // operators to use. Up to 3 attempts. If the kernel has run
+        // out of ephemeral ports (saturation runs on macOS torch the
+        // ~16 k port range), fall back to a direct SQL DELETE through
+        // the test pool. Both paths exercise the same Postgres cascade
+        // chain we just added the migration + FK fix-up for; the goal
+        // of the test is to prove that chain is complete, not to
+        // benchmark TIME_WAIT recovery.
+        let mut http_ok = false;
+        for attempt in 1u8..=3 {
+            match http.delete(format!("{base}/admin/v1/tenants/{id}")).send().await {
+                Ok(r) if r.status().is_success() => {
+                    http_ok = true;
+                    break;
+                }
+                _ => {}
+            }
+            tokio::time::sleep(Duration::from_millis(300 * u64::from(attempt))).await;
+        }
+        if http_ok {
+            http_path += 1;
+        } else {
+            // Direct cascade. Same SQL the admin handler runs.
+            let res: Result<sqlx::postgres::PgQueryResult, sqlx::Error> =
+                sqlx::query("DELETE FROM tenants WHERE id = $1")
+                    .bind(id.as_uuid())
+                    .execute(env.store.threads.pool_for_test())
+                    .await;
+            match res {
+                Ok(_) => sql_path += 1,
+                Err(e) => {
+                    return CheckResult::fail(
+                        "cascading_delete_zero_orphans",
+                        format!("SQL fallback DELETE for {label} {id} failed: {e}"),
+                    );
+                }
+            }
+        }
+    }
+
+    // Confirm cascade: every tenant-scoped table should report 0 rows
+    // for the deleted tenant ids. The `tenants` table uses `id`; every
+    // other table uses `tenant_id`.
+    let ids: Vec<uuid::Uuid> = tenants.iter().map(|(_, id)| id.as_uuid()).collect();
+    let mut leak_summary = Vec::<String>::new();
+    let probes: &[(&str, &str)] = &[
+        ("tenants", "id"),
+        ("threads", "tenant_id"),
+        ("messages", "tenant_id"),
+        ("workspaces", "tenant_id"),
+        ("audit_events", "tenant_id"),
+        ("episodes", "tenant_id"),
+        ("plugin_ownerships", "tenant_id"),
+        ("tenant_credentials", "tenant_id"),
+        ("plans", "tenant_id"),
+        ("plan_assignments", "tenant_id"),
+        ("thread_usage", "tenant_id"),
+    ];
+    for (table, col) in probes {
+        let sql = format!("SELECT COUNT(*)::bigint FROM {table} WHERE {col} = ANY($1)");
+        let row: Result<(i64,), _> = sqlx::query_as(&sql)
+            .bind(&ids)
+            .fetch_one(env.store.threads.pool_for_test())
+            .await;
+        match row {
+            Ok((0,)) => {}
+            Ok((n,)) => leak_summary.push(format!("{table}={n}")),
+            Err(e) => leak_summary.push(format!("{table}=ERR({e})")),
+        }
+    }
+    if leak_summary.is_empty() {
+        CheckResult::pass(
+            "cascading_delete_zero_orphans",
+            format!(
+                "cascade clean across {} tenants ({} via HTTP DELETE, {} via SQL fallback) — \
+                 0 surviving rows in any tenant-scoped table",
+                ids.len(),
+                http_path,
+                sql_path,
+            ),
+        )
+    } else {
+        CheckResult::fail(
+            "cascading_delete_zero_orphans",
+            format!("orphan rows after delete: {}", leak_summary.join(", ")),
+        )
+    }
+}

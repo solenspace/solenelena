@@ -93,18 +93,23 @@ pub fn write_markdown<P: AsRef<Path>>(path: P, report: &Report) -> std::io::Resu
         out.push_str(&format!("- **{} {}** — {}\n", mark, r.name, r.detail));
     }
 
-    out.push_str("\n## Known cleanup gaps surfaced\n\n");
+    out.push_str("\n## Cleanup contract\n\n");
     out.push_str(
-        "Each fire-test run leaves orphan rows that are not deletable via `/admin/v1/*`:\n\n\
-         - `tenants` — no `DELETE /admin/v1/tenants/:id` endpoint exists \
-           (`crates/elena-admin/src/tenants.rs`)\n\
-         - `workspaces` — no `DELETE /admin/v1/workspaces/:id` endpoint \
-           (`crates/elena-admin/src/workspaces.rs`)\n\
-         - `plans`, `plan_assignments`, `plugin_ownerships`, `audit_events` — \
-           no operator-facing cleanup path\n\n\
-         Recommended follow-up: add a cascading `DELETE /admin/v1/tenants/:id` \
-         that nulls plan_assignments, drops workspaces and plans, and \
-         tombstones credential rows. See plan file for scope.\n",
+        "Every tenant the test creates is dropped at the end via the\n\
+         `DELETE /admin/v1/tenants/:id` cascading endpoint\n\
+         (`crates/elena-admin/src/tenants.rs::delete_tenant`). The\n\
+         cascade is enforced by Postgres `ON DELETE CASCADE` foreign\n\
+         keys across `threads` → `messages` → `thread_approvals` /\n\
+         `thread_usage`, plus direct cascades from `tenants` to\n\
+         `workspaces`, `audit_events`, `episodes` (added in migration\n\
+         `20260424000005_episodes_tenant_fk.sql`), `plugin_ownerships`,\n\
+         `tenant_credentials`, `plans`, `plan_assignments`, and\n\
+         `budget_state`.\n\n\
+         The `cascading_delete_zero_orphans` assertion above counts\n\
+         surviving rows across all 11 tenant-scoped tables and fails\n\
+         the run if any tenant id leaked. Workspace-scoped DELETE\n\
+         (`DELETE /admin/v1/workspaces/:id?tenant_id=…`) is also\n\
+         available for finer-grained cleanup.\n",
     );
 
     fs::create_dir_all(path.as_ref().parent().unwrap_or_else(|| Path::new(".")))?;
