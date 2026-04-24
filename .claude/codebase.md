@@ -691,19 +691,20 @@ Order: foundational → agent machinery → transport → glue. Every `.rs` file
 
 ---
 
-## Chapter 32 — `elena-memory`
+## Chapter 32 — Episodic memory (now part of `elena-context`)
 
 **Role.** Workspace-scoped episodic memory. Records thread summaries on completion; recalls similar past episodes when a new thread starts.
 
-**Public surface.** `EpisodicMemory`, `Summary`, `extract_summary`, `MAX_SUMMARY_LEN`.
+**Where it lives.** Q14 inlined the original `elena-memory` crate into `elena-context`. The trait surface is unchanged; the import path moved from `elena_memory::*` to `elena_context::*`.
 
-**Files.**
+**Public surface.** `EpisodicMemory`, `Summary`, `extract_summary`, `MAX_SUMMARY_LEN` — all re-exported from `elena_context`.
+
+**Files (under `crates/elena-context/src/`).**
 
 | File | Purpose |
 |---|---|
-| `src/lib.rs` | Re-exports. |
-| `src/memory.rs` | `EpisodicMemory::{record_episode, recall}`. `record_episode` is fire-and-forget from `loop_driver::spawn_episode_record`. |
-| `src/summary.rs` | `extract_summary(messages) → Summary{task_summary, actions}`; `MAX_SUMMARY_LEN`. |
+| `memory.rs` | `EpisodicMemory::{record_episode, recall}`. `record_episode` is fire-and-forget from `loop_driver::spawn_episode_record`; the C9 gate skips the call only when the turn ended with a non-success terminal. |
+| `summary.rs` | `extract_summary(messages) → Summary{task_summary, actions}`; `MAX_SUMMARY_LEN`. |
 
 ---
 
@@ -803,9 +804,11 @@ Order: foundational → agent machinery → transport → glue. Every `.rs` file
 | `src/state.rs` | `AdminState{store, nats, admin_token, plugins: Option<Arc<PluginRegistry>>}`; `with_admin_token()`, `with_plugins()` builders. |
 | `src/router.rs` | `admin_router(state)` — mounts all routes, applies `require_admin_token` middleware. |
 | `src/auth.rs` | `require_admin_token` middleware. |
-| `src/tenants.rs` | `POST /tenants`, `GET /tenants/{id}`, `PATCH /tenants/{id}/budget`, `PATCH /tenants/{id}/allowed-plugins`. |
+| `src/tenants.rs` | `POST /tenants`, `GET /tenants/{id}`, `DELETE /tenants/{id}` (cascading — drops every tenant-scoped row via Postgres `ON DELETE CASCADE`), `PATCH /tenants/{id}/budget`, `PATCH /tenants/{id}/allowed-plugins`, `PUT /tenants/{id}/admin-scope`. |
 | `src/tenant_credentials.rs` | `PUT /tenants/{tid}/credentials/{pid}` (AES-GCM encrypt + upsert; 503 if master key missing), `DELETE /tenants/{tid}/credentials/{pid}` (idempotent). |
-| `src/workspaces.rs` | `POST /workspaces`, `GET /workspaces/{id}`, `PATCH /workspaces/{id}/instructions`, `PATCH /workspaces/{id}/allowed-plugins`. |
+| `src/plans.rs` | `POST/GET /tenants/{tid}/plans`, `GET/PATCH/DELETE /tenants/{tid}/plans/{pid}`, `PATCH /tenants/{tid}/default-plan`. |
+| `src/plan_assignments.rs` | `PUT/GET/DELETE /tenants/{tid}/assignments` — upsert / list / delete by `(user_id?, workspace_id?)` scope. |
+| `src/workspaces.rs` | `POST /workspaces`, `GET /workspaces/{id}`, `DELETE /workspaces/{id}?tenant_id=…` (transactional purge of workspace + every thread inside it), `PATCH /workspaces/{id}/instructions`, `PATCH /workspaces/{id}/allowed-plugins`. |
 | `src/plugins.rs` | `GET /plugins` — returns registered manifests (plugin_id, name, version, actions, action_count). 503 if registry not attached. Added in SCRUM-101. `PUT /plugins/{pid}/owners` — replace-all ownership set (empty = globally visible). |
 | `src/health.rs` | `GET /health/deep` — synchronous Postgres + Redis + NATS + plugin health probes. |
 
@@ -928,8 +931,10 @@ and exercises one production scenario. CI treats exit code 0 as success and
 | `elena-phase7-smoke` | Production-readiness surface: admin API, `/metrics`, audit, workspace guardrail, cautious-mode approval | none (wiremock fallback); real provider with `GROQ_API_KEY` or `ANTHROPIC_API_KEY` | Testcontainers |
 | `elena-hannlys-smoke` | Marketplace: two tenants (creator + buyer), plugin ownership, two-turn Notion page creation | `GROQ_API_KEY`; optional `NOTION_TOKEN`/`NOTION_PARENT_PAGE_ID` | Testcontainers + real Groq + Notion (or wiremock) |
 | `elena-solen-smoke` | Hero scenario: single prompt drives Shopify list → Notion page → Slack post → Sheets append | All four services' tokens + `GROQ_API_KEY` + `ELENA_CREDENTIAL_MASTER_KEY` | Testcontainers + 4 live sandbox APIs |
+| `elena-tri-tenant-firetest` | Multi-tenant saturation harness — Solen + Hannlys + Omnii driving Elena concurrently. Asserts cross-tenant isolation, audit-drop ceiling, message-commit completeness, and cascading-delete cleanup. | none (wiremock LLM, embedded plugins) | Testcontainers; default `--threads-per-tenant 50 --duration-secs 90`; report at `/tmp/elena-firetest-report.md` |
 
-Each exits 2 on missing required env (CI "skip-safe" convention).
+Each exits 2 on missing required env (CI "skip-safe" convention). The
+firetest exits 1 if any of its 9 isolation/reliability assertions fail.
 
 ---
 
@@ -952,7 +957,12 @@ Migrations live in `crates/elena-store/migrations/` and are embedded at compile-
 | `20260418000003_audit_events.sql` | `audit_events` append-only log + two indexes (tenant-time, thread partial). Phase 7 A3. |
 | `20260418000004_tenant_allowed_plugins.sql` | `ALTER tenants ADD allowed_plugin_ids text[]`. Phase 7 A4. |
 | `20260418000005_plugin_ownerships.sql` | `plugin_ownerships` (PK plugin_id + tenant_id). Phase 7 A5. |
-| `20260418000006_tenant_credentials.sql` | `tenant_credentials` (PK tenant_id + plugin_id; kv_ciphertext bytea, kv_nonce bytea). Phase 7 follow-up. |
+| `20260418000006_tenant_credentials.sql` | `tenant_credentials` (PK tenant_id + plugin_id; kv_ciphertext bytea, kv_nonce bytea). |
+| `20260424000001_plans.sql` | `plans` table (B1) + `is_default` partial unique index per tenant. |
+| `20260424000002_plan_assignments.sql` | `plan_assignments` table — `(tenant, user_id?, workspace_id?)` resolution scope. |
+| `20260424000003_tenant_admin_scope.sql` | `ALTER tenants ADD admin_scope_hash bytea` (S2 per-tenant scope). |
+| `20260424000004_thread_usage.sql` | `thread_usage` per-thread token counters. |
+| `20260424000005_episodes_tenant_fk.sql` | `ALTER episodes ADD CONSTRAINT episodes_tenant_id_fkey ... ON DELETE CASCADE` — closes the last cascade gap so `DELETE FROM tenants` reaches every dependent row. |
 
 **Resulting tables** (at a glance):
 
@@ -1280,9 +1290,7 @@ Quick lookup of every `.rs` file in the workspace. (Tests in `tests/` directorie
 
 **`crates/elena-tools/src/`**: lib.rs, tool.rs, registry.rs, orchestrate.rs, context.rs.
 
-**`crates/elena-context/src/`**: lib.rs, context_manager.rs, embedder.rs, onnx.rs, packer.rs, tokens.rs, summarize.rs, error.rs.
-
-**`crates/elena-memory/src/`**: lib.rs, memory.rs, summary.rs.
+**`crates/elena-context/src/`**: lib.rs, context_manager.rs, embedder.rs, onnx.rs, packer.rs, tokens.rs, summarize.rs, summary.rs, memory.rs, error.rs (the `memory.rs` + `summary.rs` files moved here from the standalone `elena-memory` crate during Q14).
 
 **`crates/elena-router/src/`**: lib.rs, router.rs, rules.rs, cascade.rs, failover.rs.
 
@@ -1298,9 +1306,10 @@ Quick lookup of every `.rs` file in the workspace. (Tests in `tests/` directorie
 
 **`crates/elena-worker/src/`**: lib.rs, main.rs, config.rs, error.rs, consumer.rs, dispatch.rs, publisher.rs.
 
+**`crates/elena-connector-echo/src/`**: lib.rs (in-process EmbeddedExecutor reference connector — was moved from `bins/` to `crates/` during Q6 since it has no standalone use as a sidecar binary).
+
 **Bins (each has `src/main.rs`, plus `src/lib.rs` for connector crates)**:
-- `bins/elena-server/src/main.rs`
-- `bins/elena-connector-echo/src/{main.rs, lib.rs}`
+- `bins/elena-server/src/{main.rs, lib.rs, bootstrap.rs}` — unified gateway+worker process (Railway image)
 - `bins/elena-connector-slack/src/{main.rs, lib.rs}`
 - `bins/elena-connector-notion/src/{main.rs, lib.rs}`
 - `bins/elena-connector-sheets/src/{main.rs, lib.rs}`
@@ -1308,8 +1317,9 @@ Quick lookup of every `.rs` file in the workspace. (Tests in `tests/` directorie
 - `bins/elena-phase7-smoke/src/main.rs`
 - `bins/elena-hannlys-smoke/src/main.rs`
 - `bins/elena-solen-smoke/src/main.rs`
+- `bins/elena-tri-tenant-firetest/src/{main.rs, harness.rs, workload.rs, video_mock.rs, assertions.rs, report.rs}` — multi-tenant saturation test (Solen + Hannlys + Omnii against testcontainer infra)
 
-That's 162 Rust source files covering 16 library crates and 16 binary crates, plus 12 SQL migrations.
+16 library crates + 9 binary crates + 17 SQL migrations.
 
 ---
 
