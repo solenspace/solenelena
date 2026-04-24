@@ -35,9 +35,19 @@ ws.on("open", () => {
   ws.send(JSON.stringify(frame));
 });
 
+// Peel the X4 StreamEnvelope wrapper {"offset":N,"event":{...}} so the
+// switch sees the inner StreamEvent. Unwrapped frames (session_started
+// ack) pass through untouched.
+function inner(v) {
+  return (typeof v.offset === "number" && v.event && typeof v.event === "object")
+    ? v.event
+    : v;
+}
+
 ws.on("message", (m) => {
-  let ev;
-  try { ev = JSON.parse(m.toString()); } catch (_) { return; }
+  let raw;
+  try { raw = JSON.parse(m.toString()); } catch (_) { return; }
+  const ev = inner(raw);
   switch (ev.event) {
     case "text_delta":         out.text += ev.delta; break;
     case "tool_use_complete":  out.tool_calls.push({ name: ev.name, input: ev.input }); break;
