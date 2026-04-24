@@ -71,9 +71,27 @@ pub async fn ws_upgrade(
     AuthedTenant(tenant): AuthedTenant,
     Path(thread_id): Path<ThreadId>,
     Query(query): Query<StreamQuery>,
+    headers: axum::http::HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, GatewayError> {
     let since = query.since;
+    // RFC 6455 §4.2.2: when the client sends Sec-WebSocket-Protocol the
+    // server MUST echo back the agreed subprotocol or the upgrade fails
+    // strict clients (e.g. node-ws). Echo whichever `elena.bearer.<jwt>`
+    // value was sent so the JWT-via-subprotocol auth path completes the
+    // handshake cleanly.
+    let upgrade = if let Some(matched) = headers
+        .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| {
+            s.split(',').map(str::trim).find(|p| p.starts_with("elena.bearer."))
+        })
+        .map(str::to_owned)
+    {
+        upgrade.protocols([matched])
+    } else {
+        upgrade
+    };
     Ok(upgrade.on_upgrade(move |socket| handle_socket(state, tenant, thread_id, since, socket)))
 }
 

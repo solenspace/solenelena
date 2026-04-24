@@ -1,5 +1,6 @@
 // Run one turn over the Elena WebSocket. Args via process.env:
-//   WS_URL    full ws:// or wss:// URL including ?token=...
+//   WS_URL    full ws:// or wss:// URL (no ?token=, S7 dropped that)
+//   JWT       bearer token, sent as Sec-WebSocket-Protocol elena.bearer.<jwt>
 //   PROMPT    user message text
 //   AUTONOMY  cautious | moderate | yolo (default yolo)
 //   MODEL     model id override (default llama-3.3-70b-versatile)
@@ -10,17 +11,18 @@
 const WebSocket = require("ws");
 
 const url = process.env.WS_URL;
+const jwt = process.env.JWT;
 const prompt = process.env.PROMPT;
 const autonomy = process.env.AUTONOMY || "yolo";
 const model = process.env.MODEL || "llama-3.3-70b-versatile";
 const timeoutMs = Number(process.env.TIMEOUT || 120000);
 
-if (!url || !prompt) {
-  console.error("WS_URL and PROMPT env vars required");
+if (!url || !jwt || !prompt) {
+  console.error("WS_URL, JWT, and PROMPT env vars required");
   process.exit(2);
 }
 
-const ws = new WebSocket(url);
+const ws = new WebSocket(url, [`elena.bearer.${jwt}`]);
 const out = { reason: null, text: "", tool_calls: [], awaiting: null, errors: [] };
 const deadline = setTimeout(() => {
   out.reason = "timeout";
