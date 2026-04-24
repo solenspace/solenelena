@@ -97,7 +97,12 @@ impl Harness {
                 pool_max: 16,
                 pool_min: 4,
                 connect_timeout_ms: 10_000,
-                statement_timeout_ms: 30_000,
+                // Bumped from prod default — the cascading tenant
+                // delete at the end of the run touches ~25 k rows
+                // across 11 tables and needs more headroom. Raise
+                // production accordingly when a tenant has a lot of
+                // history.
+                statement_timeout_ms: 180_000,
             },
             redis: RedisConfig {
                 url: SecretString::from(format!("redis://127.0.0.1:{redis_port}")),

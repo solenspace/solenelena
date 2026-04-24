@@ -158,6 +158,31 @@ impl TenantStore {
         Ok(())
     }
 
+    /// Delete a tenant and every row scoped to it. Cascades to
+    /// `threads` (and through them `messages` + `thread_approvals` +
+    /// `thread_usage`), `workspaces`, `audit_events`, `episodes`,
+    /// `plugin_ownerships`, `tenant_credentials`, `plans`,
+    /// `plan_assignments`, and `budget_state` via the schema's
+    /// `ON DELETE CASCADE` foreign keys (see migration
+    /// `20260424000005_episodes_tenant_fk.sql` for the episodes
+    /// fix-up that closed the last gap).
+    ///
+    /// Returns `true` when a row was actually deleted, `false` when
+    /// the tenant did not exist (admin handler treats both as
+    /// success — idempotent 204).
+    ///
+    /// Surfaced as a need by the tri-tenant fire-test
+    /// (`bins/elena-tri-tenant-firetest`), which used to leave 3
+    /// tenants + 6 workspaces + plan rows orphaned per run.
+    pub async fn delete_tenant(&self, id: TenantId) -> Result<bool, StoreError> {
+        let rows = sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(id.as_uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(classify_sqlx)?;
+        Ok(rows.rows_affected() > 0)
+    }
+
     /// Replace the per-tenant admin-scope hash. Pass `None` to clear
     /// (the tenant then inherits the global admin token).
     ///
