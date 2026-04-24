@@ -54,11 +54,12 @@ crates/
 
 bins/
   elena-server                unified gateway+worker process
-  elena-phase7-smoke          end-to-end smoke (real Groq + testcontainer infra)
+  elena-phase7-smoke          end-to-end smoke (wiremock or real provider + testcontainer infra)
   elena-hannlys-smoke         marketplace flow E2E (creator + buyer)
   elena-solen-smoke           hero scenario E2E (Slack + Notion + Sheets + Shopify)
-  elena-slack-smoke           Slack-only smoke
-  elena-connector-{slack,notion,sheets,shopify,echo}   gRPC plugin sidecars
+  elena-connector-{slack,notion,sheets,shopify}        gRPC plugin sidecars
+
+crates/elena-connector-echo                            in-process echo plugin (reference EmbeddedExecutor)
 ```
 
 ---

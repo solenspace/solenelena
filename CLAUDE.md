@@ -57,28 +57,24 @@ crates/
   elena-admin          /admin/v1 routes (tenants, workspaces, plugins, ...)
 
 bins/
-  elena-server                unified gateway+worker process (Railway, Docker)
-  elena-phase{1..7}-smoke     phase-by-phase end-to-end smokes
+  elena-server                unified gateway+worker process (Railway image)
+  elena-phase7-smoke          end-to-end happy-path + cautious-approval smoke
   elena-hannlys-smoke         marketplace flow E2E (creator + buyer)
   elena-solen-smoke           hero scenario E2E (Slack + Notion + Sheets + Shopify)
-  elena-connector-echo        in-process plugin reference
   elena-connector-{slack,notion,sheets,shopify}   live-API plugin sidecars
 
 deploy/
-  helm/elena                  Helm chart (EKS, GKE, AKS, kind)
-  docker/Dockerfile.all-in-one  Railway-friendly single-process image
-  docker/Dockerfile.{gateway,worker,connector-echo}   per-service images
-  k8s/                        raw manifests
+  docker/Dockerfile.all-in-one  Railway single-process image
+  alerts.yaml                 Prometheus alert rules
   RUNBOOK.md                  operator playbook
 
 scripts/
-  bootstrap.sh                first-deploy bring-up
+  live-e2e.sh                 production validation suite
+  live-e2e-{mintjwt,runturn}.js  helpers used by live-e2e.sh
 
 .claude/
-  00-…10-                     architecture deep-dives of the
-                              Claude Code TypeScript codebase that
-                              informed Elena's design (read for context
-                              when touching the matching subsystem)
+  ARCHITECTURE.md             Elena runtime contract
+  {codebase,solen,hannlys}.md per-app deep-dives
 ```
 
 ---
@@ -100,8 +96,9 @@ require Docker. Smoke binaries live under `bins/elena-*-smoke`.
 ### Smoke binaries
 
 ```sh
-# Phase 7 happy path (real Groq + testcontainer infra)
-GROQ_API_KEY=... cargo run --release -p elena-phase7-smoke
+# Happy-path turn + Cautious approval round-trip (wiremock by default;
+# real Groq when GROQ_API_KEY / ELENA_PROVIDERS__GROQ__API_KEY is set).
+cargo run --release -p elena-phase7-smoke
 
 # Hannlys marketplace flow (real Groq; real Notion when secrets are set)
 cargo run --release -p elena-hannlys-smoke
@@ -130,18 +127,16 @@ which CI can treat as "skipped" without failing the build.
 5. Health-check path is `/admin/v1/health/deep`. Restart policy is
    `ON_FAILURE` with up to 10 retries (already in `railway.json`).
 
-### Helm / Kubernetes (production)
-
-```sh
-helm install elena deploy/helm/elena \
-  --namespace elena --create-namespace \
-  --values your-prod-values.yaml
-```
-
 `elena-server` runs `Store::run_migrations()` unconditionally at
 startup, so a fresh deployment applies migrations on first boot. See
-`deploy/RUNBOOK.md` for cluster prerequisites, mTLS provisioning, and
-upgrade procedure.
+`deploy/RUNBOOK.md` for the operator quick-reference.
+
+If you migrate off Railway: Elena currently ships only the all-in-one
+process. Splitting back into per-process gateway + worker bins (or
+running the all-in-one image with separate `ELENA_WORKER__*` envs in
+each replica) is a re-introduction job — the prior Helm chart and
+per-service Dockerfiles were removed because they referenced bin
+targets that no longer exist.
 
 ---
 

@@ -191,7 +191,7 @@ Three test styles live in Elena:
 
 1. **Unit tests** — inline in the same file as the code under test, wrapped in `#[cfg(test)] mod tests { ... }`. Most `.rs` files have one. Runs with `cargo test`.
 2. **Integration tests** — each file under `crates/<crate>/tests/` is its own binary that links the crate's public API. Run with `cargo test -p <crate> --test <filename>`. Elena uses these for Phase tests (`phase4_loop.rs`, `phase7_blockers.rs`), round-trip checks, and testcontainer-backed flows.
-3. **Smoke binaries** — real end-to-end runs in `bins/elena-phase{1..7}-smoke`, `elena-solen-smoke`, `elena-hannlys-smoke`, `elena-slack-smoke`. These boot the actual stack (some via testcontainers, some against live services), exercise a scenario, exit 0 on success or 2 on "skip — missing required env vars."
+3. **Smoke binaries** — real end-to-end runs in `bins/elena-phase7-smoke`, `elena-solen-smoke`, `elena-hannlys-smoke`. These boot the actual stack (some via testcontainers, some against live services), exercise a scenario, exit 0 on success or 2 on "skip — missing required env vars."
 
 Elena's integration tests rely heavily on **`testcontainers`** — a crate that spins up disposable Docker containers (Postgres+pgvector, Redis, NATS) per test. Requires local Docker; hence `cargo test` is slower than most projects.
 
@@ -861,7 +861,7 @@ Order: foundational → agent machinery → transport → glue. Every `.rs` file
 
 ## Chapter 40 — `bins/elena-server` (unified process)
 
-**One file: `src/main.rs`.** This is the production entry point (Railway image runs this; Helm chart deploys it).
+**One file: `src/main.rs`.** This is the production entry point (Railway image runs this).
 
 **Boot sequence:**
 
@@ -917,25 +917,15 @@ All connectors read `x-elena-cred-*` gRPC metadata at execute time and prefer th
 
 **Note.** Each connector is also available as a library crate (same cargo package), so `elena-embedded-plugins::spawn_one` can embed it in-process.
 
-## Chapter 42 — Phase smoke bins
+## Chapter 42 — End-to-end smoke binaries
 
-Each `bins/elena-phase{n}-smoke/src/main.rs` runs one end-to-end scenario against the matching phase's subsystem. CI treats exit code 0 as success and 2 as "skip — missing env vars."
-
-| Bin | Validates | Required env | Infra |
-|---|---|---|---|
-| `elena-phase1-smoke` | Postgres + Redis data path, tenant isolation, Redis claim CAS | `ELENA_POSTGRES__URL`, `ELENA_REDIS__URL` (or `.env.local`) | Real or testcontainers |
-| `elena-phase2-smoke` | Anthropic SSE streaming | `ANTHROPIC_API_KEY` | Real Anthropic |
-| `elena-phase3-smoke` | Full loop with `reverse_text` built-in tool | `ANTHROPIC_API_KEY` | Testcontainers + real Anthropic |
-| `elena-phase4-smoke` | Retrieval + memory across two turns; tier routing | `ANTHROPIC_API_KEY`; optional `ELENA_EMBEDDING_MODEL_PATH`/`ELENA_TOKENIZER_PATH` | Testcontainers |
-| `elena-phase5-smoke` | Gateway → NATS → worker → WebSocket round-trip | none (wiremock fallback) | Testcontainers + NATS |
-| `elena-phase6-smoke` | Plugin gRPC (echo connector) + tool-use end-to-end | none (wiremock) | Testcontainers |
-| `elena-phase7-smoke` | Production-readiness surface: admin API, `/metrics`, audit, workspace guardrail, cautious-mode approval | none (wiremock) | Testcontainers |
-
-## Chapter 43 — Live-services smokes
+Each `bins/elena-*-smoke/src/main.rs` boots the full stack via testcontainers
+and exercises one production scenario. CI treats exit code 0 as success and
+2 as "skip — missing env vars."
 
 | Bin | Scenario | Required env | Notes |
 |---|---|---|---|
-| `elena-slack-smoke` | 6 cases: baseline env token, per-tenant token injection, workspace guardrail, multi-turn, list-channels read path, audit verification | `GROQ_API_KEY`, `SLACK_BOT_TOKEN`, `SLACK_TEST_CHANNEL_ID`, `ELENA_CREDENTIAL_MASTER_KEY` | Testcontainers + real Slack Web API |
+| `elena-phase7-smoke` | Production-readiness surface: admin API, `/metrics`, audit, workspace guardrail, cautious-mode approval | none (wiremock fallback); real provider with `GROQ_API_KEY` or `ANTHROPIC_API_KEY` | Testcontainers |
 | `elena-hannlys-smoke` | Marketplace: two tenants (creator + buyer), plugin ownership, two-turn Notion page creation | `GROQ_API_KEY`; optional `NOTION_TOKEN`/`NOTION_PARENT_PAGE_ID` | Testcontainers + real Groq + Notion (or wiremock) |
 | `elena-solen-smoke` | Hero scenario: single prompt drives Shopify list → Notion page → Slack post → Sheets append | All four services' tokens + `GROQ_API_KEY` + `ELENA_CREDENTIAL_MASTER_KEY` | Testcontainers + 4 live sandbox APIs |
 
@@ -1048,54 +1038,22 @@ Notice the double-underscore convention: it maps nested TOML keys into env vars.
 
 Env defaults in the image: `ELENA_LISTEN_ADDR=0.0.0.0:8080`, `RUST_LOG=info,elena_gateway=info,elena_worker=info`.
 
-## Chapter 49 — Split Dockerfiles
+## Chapter 49 — Operator runbook
 
-Not used in production today, but available:
-- `Dockerfile.gateway` — builds only `elena-gateway` bin.
-- `Dockerfile.worker` — builds only `elena-worker` bin.
-- `Dockerfile.connector-echo` — builds `elena-connector-echo` as a stand-alone sidecar.
+`deploy/RUNBOOK.md` — operator playbook for Railway. Quick-reference scenarios:
+1. Mass 429s → check `/metrics`, raise `ELENA_RATE_LIMITS__*` env.
+2. Provider outage → swap `ELENA_DEFAULTS__TIER_MODELS__*__PROVIDER` env.
+3. DB failover → worker reconnects on next dispatch.
+4. Bad deploy → Railway → previous deployment → "Redeploy".
+5. NATS corrupt → delete + recreate stream.
+6. Redis flap → fred auto-reconnects; 60 s claim TTL releases stuck claims.
+7. Audit drops nonzero → investigate worker pressure.
+8. JWT secret leak → rotate `ELENA_JWT_SECRET` and redeploy.
 
-Used by the Helm chart if you want to scale gateway and worker independently (large fleets; not needed for Railway).
+SLOs stated: first-token p95 < 1.2 s, turn-completion p95 < 15 s, 99.9 % availability.
 
-## Chapter 50 — Helm chart (`deploy/helm/elena/`)
-
-Chart.yaml: Helm v2, appVersion 1.0.0.
-
-`values.yaml` keys:
-
-- `image.registry` (`ghcr.io/solen/elena`), `image.tag` (`1.0.0`), `image.pullPolicy` (`IfNotPresent`).
-- `gateway.replicaCount` (3), `gateway.service.type` (`ClusterIP`), `gateway.service.port` (8080), `gateway.resources.{requests,limits}` (200m/256Mi requests, 1/512Mi limits).
-- `worker.replicaCount` (4), `worker.maxConcurrentLoops` (500), `worker.resources.{requests,limits}` (500m/512Mi requests, 2/2Gi limits).
-- `connectorEcho.enabled` (true), `connectorEcho.replicaCount` (1), `connectorEcho.port` (50061).
-- `postgres.url`, `redis.url`, `nats.url` — empty placeholders; operator fills via values override or external Secret.
-- `jwt.algorithm` (`HS256` or `RS256`), `jwt.secretRef` (`elena-jwt-secret`), `jwt.jwksUrl`, `jwt.issuer`, `jwt.audience`, `jwt.leewaySeconds` (60).
-- `tls.enabled` (false by default), `tls.certSecretRef`, `tls.caSecretRef` (for mTLS).
-- `otel.endpoint`, `otel.serviceName`, `otel.deploymentEnvironment`.
-- `rateLimits.{tenantRpm,tenantInflightMax,providerConcurrency,pluginConcurrency}` — null/unlimited by default.
-- `plugins` — list of gRPC endpoint URLs the worker dials.
-
-Templates under `templates/`:
-- `gateway-deployment.yaml` — Deployment for gateway.
-- `worker-deployment.yaml` — Deployment for worker.
-- `connector-echo.yaml` — StatefulSet for echo sidecar.
-
-Deploy: `helm install elena deploy/helm/elena --namespace elena --create-namespace --values prod-values.yaml`. First boot triggers `run_migrations()` automatically.
-
-## Chapter 51 — Raw K8s manifests and RUNBOOK
-
-`deploy/k8s/bootstrap/` — raw manifests for first-time cluster bring-up (Postgres StatefulSet, Redis, NATS, cert-manager ClusterIssuer). `scripts/bootstrap.sh` applies them, waits, runs migrations.
-
-`deploy/RUNBOOK.md` — operator playbook. Eight scenarios:
-1. Mass 429s → check `/metrics`, raise `rateLimits.tenantRpm`.
-2. Provider outage → `/admin/v1/health/deep`, router auto-fails over via circuit breaker.
-3. DB failover → workers reconnect automatically.
-4. Cert rotation → cert-manager; workers re-read on next connect.
-5. Bad deploy → `helm rollback elena`.
-6. NATS corrupt → delete + recreate stream.
-7. Redis flap → fred auto-reconnects; 60s claim TTL releases stuck claims.
-8. LLM key leak → rotate via `SecretProvider`.
-
-SLOs stated: first-token p95 < 1.2s, turn-completion p95 < 15s, 99.9% availability.
+`deploy/alerts.yaml` — Prometheus alert rules, including the canary
+`ElenaAuditDropsNonzero` (any non-zero `elena_audit_drops_total`).
 
 ## Chapter 52 — Env var reference
 
@@ -1148,7 +1106,7 @@ Step-by-step recipes for the common change types. Each lists files in edit order
 2. Implement the `Tool` trait: `name`, `description`, `input_schema` (JSON schema), `is_read_only`, `execute`.
 3. Register it at boot: in `bins/elena-server/src/main.rs`, after `let tools = ToolRegistry::new();`, call `tools.register_arc(Arc::new(MyTool::new()))`.
 4. Add unit tests inline in `my_tool.rs`.
-5. Verify: `cargo test -p elena-tools`, then `cargo run -p elena-phase3-smoke` with an API key.
+5. Verify: `cargo test -p elena-tools`, then `cargo run -p elena-phase7-smoke` with a provider key.
 
 ## Chapter 54 — Add a new plugin connector (embedded path, current prod)
 
@@ -1168,7 +1126,7 @@ Step-by-step recipes for the common change types. Each lists files in edit order
 1. If the provider is OpenAI-compatible, no code needed — just add to `ProvidersConfig` + register in `bins/elena-server/src/main.rs::build_llm` with `OpenAiCompatClient::new(cfg)`.
 2. If it's a custom protocol, implement `LlmClient` in a new `crates/elena-llm/src/<name>.rs`. Required: `provider()`, `stream()`. Reuse `SseExtractor` + `decide_retry` if the upstream uses SSE.
 3. Register in `LlmMultiplexer` at boot.
-4. Add a Phase-2-style smoke (`bins/elena-phase2-smoke` template) to exercise streaming.
+4. Extend `bins/elena-phase7-smoke` (or copy it) to exercise the new provider's streaming path against a wiremock or live key.
 
 ## Chapter 56 — Add an admin route
 
@@ -1213,7 +1171,7 @@ Note: changing `AutonomyMode`'s variant set is a wire-format change — update `
 
 1. At the top of the connector's `src/lib.rs`, add `fn resolve_token(req: &Request<_>) -> SecretString` that checks `req.metadata().get("x-elena-cred-token")` first, falls back to env.
 2. No Elena-side changes beyond the admin route already in place — `PUT /admin/v1/tenants/{tid}/credentials/{pid}` handles encrypted storage; the worker-side orchestrator in `elena-core::handle_executing_tools` fetches via `TenantCredentialsStore::get_decrypted` and injects into `PerCallCredentials`, which `PluginActionTool::execute` serializes as `x-elena-cred-*` metadata.
-3. Smoke-test via `bins/elena-slack-smoke` which does exactly this flow; copy it for your connector.
+3. Smoke-test via `bins/elena-solen-smoke` (which exercises the per-tenant credential injection path end-to-end against Slack/Notion/Sheets/Shopify); copy its harness for your connector.
 
 ---
 
@@ -1288,7 +1246,7 @@ Lookup table — see `~/Documents/docs/elena-agentic-integration.md` for the ful
   - 09: Ink TUI
   - 10: Rust crate layout
 - `deploy/RUNBOOK.md` — operator playbook.
-- `scripts/bootstrap.sh`, `scripts/live-e2e.sh`, `scripts/live-e2e-mintjwt.js`, `scripts/live-e2e-runturn.js` — operational scripts.
+- `scripts/live-e2e.sh`, `scripts/live-e2e-mintjwt.js`, `scripts/live-e2e-runturn.js` — production-URL validation suite.
 - `~/Documents/docs/elena-agentic-integration.md` — SCRUM-85..104 post-mortem. Most of this document's "debugging" section is summarized from there.
 
 ## Chapter 66 — External references
@@ -1347,8 +1305,7 @@ Quick lookup of every `.rs` file in the workspace. (Tests in `tests/` directorie
 - `bins/elena-connector-notion/src/{main.rs, lib.rs}`
 - `bins/elena-connector-sheets/src/{main.rs, lib.rs}`
 - `bins/elena-connector-shopify/src/{main.rs, lib.rs}`
-- `bins/elena-phase1-smoke/src/main.rs` through `bins/elena-phase7-smoke/src/main.rs`
-- `bins/elena-slack-smoke/src/main.rs`
+- `bins/elena-phase7-smoke/src/main.rs`
 - `bins/elena-hannlys-smoke/src/main.rs`
 - `bins/elena-solen-smoke/src/main.rs`
 
