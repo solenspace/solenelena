@@ -155,6 +155,9 @@ upgrade procedure.
 | `JWT_HS256_SECRET` | yes (HS256) | Symmetric secret for JWT validation |
 | `JWT_JWKS_URL` | yes (RS256) | Remote JWKS endpoint (alternative to HS256) |
 | `ELENA_CREDENTIAL_MASTER_KEY` | recommended | Base64-encoded 32-byte AES-256 key. Required if any tenant uses per-tenant credential injection; absence falls back to env-only single-tenant mode. |
+| `ELENA_ADMIN_TOKEN` | yes | Shared secret enforced as `X-Elena-Admin-Token` on every `/admin/v1/*` call. Boot fails if unset, unless `ELENA_ALLOW_OPEN_ADMIN=true` is also set (dev-only escape hatch). |
+| `ELENA_ALLOW_OPEN_ADMIN` | optional | Set to `true` to boot `elena-server` without an admin token, exposing `/admin/v1/*` unauthenticated. Local dev / smoke runs only. |
+| `ELENA_CORS_ALLOW_ORIGINS` | optional | Comma-separated list of exact-match origins (`https://app.example.com,https://staging.example.com`) the gateway will echo back in `Access-Control-Allow-Origin`. Empty / unset disables CORS (default). The wildcard `*` is rejected at boot — operators must enumerate origins. |
 | `GROQ_API_KEY` / `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` | per provider | Set the ones you need; the multiplexer registers each one configured |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | optional | Enable OTel pipeline export |
 | `RUST_LOG` | optional | tracing-subscriber filter (default: `info`) |
@@ -275,24 +278,38 @@ are missing — partial provisioning is fine.
 
 ---
 
-## Architecture deep-dives
+## Deprecation window: `TenantTier`
 
-The reference docs in `.claude/` describe the Claude Code TypeScript
-codebase Elena's design was modelled on. They are not Elena
-documentation — Elena diverges wherever Rust patterns or the
-distributed runtime point to a cleaner design. Read the relevant doc
-when touching the matching subsystem; do not duplicate them here.
+B1 introduced admin-defined Plans (`Plan` / `ResolvedPlan`) as the
+single source of truth for budget, allowed plugins, and routing
+preferences. The legacy `TenantTier` enum (and the
+`BudgetLimits::DEFAULT_FREE` / `DEFAULT_PRO` constants and the
+`default_budget_for_tier` fallback) survive only because the JWT claim
+shape still carries `tier`. They're marked `#[deprecated]` and every
+crate that references them carries a `#![allow(deprecated)]` tagged
+`B1.6` so workspace clippy stays green.
 
-| File | Subsystem |
-|---|---|
-| [.claude/00-architecture-overview.md](.claude/00-architecture-overview.md) | Whole-codebase map |
-| [.claude/01-agentic-loop.md](.claude/01-agentic-loop.md) | The while-true loop |
-| [.claude/02-api-streaming.md](.claude/02-api-streaming.md) | LLM streaming + retry |
-| [.claude/03-tool-system.md](.claude/03-tool-system.md) | Tools + permissions |
-| [.claude/04-context-management.md](.claude/04-context-management.md) | Context + compaction |
-| [.claude/05-services.md](.claude/05-services.md) | Service subsystems |
-| [.claude/06-multi-agent.md](.claude/06-multi-agent.md) | Coordinator + bridge |
-| [.claude/07-state-bootstrap.md](.claude/07-state-bootstrap.md) | App state + bootstrap |
-| [.claude/08-commands-skills.md](.claude/08-commands-skills.md) | Commands + skills |
-| [.claude/09-tui-framework.md](.claude/09-tui-framework.md) | Ink TUI |
-| [.claude/10-rust-architecture.md](.claude/10-rust-architecture.md) | Rust crate layout |
+**To finish the removal** (a future PR):
+
+1. Drop `tier` from `ElenaJwtClaims` and update BFFs to omit it.
+2. Migrate `elena-router::RoutingContext.tenant_tier` to `plan.tier_models`.
+3. Migrate `CachePolicy::new(tier, ...)` to `CachePolicy::from_plan(...)`.
+4. Drop the `tier` column from `tenants` (new migration).
+5. Delete `TenantTier`, `BudgetLimits::DEFAULT_FREE/PRO`,
+   `default_budget_for_tier`, `TenantContext.tier`.
+6. Remove every `#![allow(deprecated)]` tagged `B1.6` (15+ files).
+
+The `#[deprecated]` annotations document the migration target inline.
+
+---
+
+## Architecture
+
+[`.claude/ARCHITECTURE.md`](.claude/ARCHITECTURE.md) describes the
+current Elena runtime contract — crate map, loop state machine,
+multi-tenancy / reliability / scalability / security invariants, and
+a phase-history appendix for the historical numbering scattered
+through source comments.
+
+App-specific deep-dives live next to it: [`.claude/solen.md`](.claude/solen.md),
+[`.claude/hannlys.md`](.claude/hannlys.md), [`.claude/codebase.md`](.claude/codebase.md).
