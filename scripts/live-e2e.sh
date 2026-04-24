@@ -52,10 +52,18 @@ cleanup() {
   echo -e "${CB}━━━ cleanup ━━━${CD}"
   for tid in "${TENANTS_CREATED[@]:-}"; do
     [[ -z "$tid" ]] && continue
-    curl -sS -o /dev/null -X DELETE \
+    # Cascading delete (PR #9): one call drops the tenant row + every
+    # workspace, plan, plan_assignment, plugin_ownership, credential,
+    # thread, message, audit_event, episode, and budget_state row tied
+    # to it. Idempotent — 204 first call, 404 thereafter.
+    rc=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
       -H "x-elena-admin-token: $ELENA_ADMIN_TOKEN" \
-      "$BASE/admin/v1/tenants/$tid/credentials/echo" 2>/dev/null || true
-    echo "  i tenant $tid: credentials cleared (no admin DELETE for tenant row in v1; rows scoped by tenant_id remain orphaned)"
+      "$BASE/admin/v1/tenants/$tid" 2>/dev/null)
+    case "$rc" in
+      204) printf "  ${CG}✓${CD} tenant %s: cascading delete (204)\n" "$tid" ;;
+      404) printf "  ${CY}i${CD} tenant %s: already gone (404)\n" "$tid" ;;
+      *)   printf "  ${CR}✗${CD} tenant %s: DELETE returned %s — please retry manually\n" "$tid" "$rc" ;;
+    esac
   done
 }
 
