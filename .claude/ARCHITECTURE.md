@@ -36,30 +36,30 @@ checkpoint, claim, park-on-approval, and resume.
 
 ```
 crates/
-  elena-types          domain types, transport envelopes, autonomy
-  elena-config         figment loader (TOML + env, layered)
-  elena-store          Postgres + Redis persistence; migrations
-  elena-llm            provider trait, SSE streaming, anthropic + openai-compat
-  elena-tools          Tool trait, registry, batched orchestrator
-  elena-context        context packing + summarisation
-  elena-memory         pgvector embeddings, episodic recall
-  elena-router         tier model routing, circuit breaker, failover
-  elena-core           the agent loop: state machine, step driver, dispatch
-  elena-gateway        axum HTTP+WS frontend, NATS publisher
-  elena-worker         NATS JetStream consumer, claim CAS, dispatch
-  elena-plugins        gRPC plugin registry, action_tool, schema-drift
-  elena-observability  Prometheus metrics, OTel pipeline, mTLS helpers
-  elena-auth           JWT validator, JWKS, scope hashing, secret providers
-  elena-admin          /admin/v1 routes (tenants, plans, workspaces, ...)
+  elena-types             domain types, transport envelopes, autonomy
+  elena-config            figment loader (TOML + env, layered)
+  elena-store             Postgres + Redis persistence; migrations
+  elena-llm               provider trait, SSE streaming, anthropic + openai-compat
+  elena-tools             Tool trait, registry, batched orchestrator
+  elena-context           context packing, summarisation, pgvector embeddings, episodic recall
+  elena-router            tier model routing, circuit breaker, failover
+  elena-core              the agent loop: state machine, step driver, dispatch
+  elena-gateway           axum HTTP+WS frontend, NATS publisher, X1 fanout
+  elena-worker            NATS JetStream consumer, claim CAS, dispatch, audit drain
+  elena-plugins           plugin registry, gRPC client, X7 EmbeddedExecutor backend
+  elena-observability     Prometheus metrics, OTel pipeline, mTLS helpers
+  elena-auth              JWT/JWKS validator, admin-token + tenant-scope middleware, secret providers
+  elena-admin             /admin/v1 routes (tenants, plans, workspaces, plugins, credentials)
+  elena-embedded-plugins  registers in-process connectors (slack/notion/sheets/shopify/echo)
+  elena-connector-echo    in-process echo plugin (reference EmbeddedExecutor)
 
 bins/
-  elena-server                unified gateway+worker process
-  elena-phase7-smoke          end-to-end smoke (wiremock or real provider + testcontainer infra)
+  elena-server                unified gateway+worker process (Railway image)
+  elena-phase7-smoke          end-to-end smoke (wiremock or real provider + testcontainers)
   elena-hannlys-smoke         marketplace flow E2E (creator + buyer)
   elena-solen-smoke           hero scenario E2E (Slack + Notion + Sheets + Shopify)
-  elena-connector-{slack,notion,sheets,shopify}        gRPC plugin sidecars
-
-crates/elena-connector-echo                            in-process echo plugin (reference EmbeddedExecutor)
+  elena-tri-tenant-firetest   multi-tenant saturation harness (Solen + Hannlys + Omnii)
+  elena-connector-{slack,notion,sheets,shopify}    gRPC plugin sidecars
 ```
 
 ---
@@ -102,6 +102,15 @@ model) — operator policy changes between pause and resume take effect.
 - **Per-tenant admin scope** (S2) — tenants may opt into requiring
   `X-Elena-Tenant-Scope` on top of the global `X-Elena-Admin-Token`
   for their `/admin/v1/*` routes.
+- **Cascading cleanup** — `DELETE /admin/v1/tenants/:id` drops the
+  tenant row and every dependent row in one transaction; the schema's
+  `ON DELETE CASCADE` foreign keys (including the
+  `episodes_tenant_id_fkey` added in migration
+  `20260424000005_episodes_tenant_fk.sql`) handle the fan-out across
+  threads → messages, workspaces, audit_events, plans,
+  plan_assignments, plugin_ownerships, tenant_credentials, and
+  budget_state. `DELETE /admin/v1/workspaces/:id?tenant_id=…` covers
+  finer-grained cleanup.
 
 ---
 
@@ -170,7 +179,7 @@ repeating the rollout story.
 | 1     | Core types + ID branding | `elena-types` foundation |
 | 2     | LLM provider abstraction + retry policy | `elena-llm` with Anthropic client |
 | 3     | Streaming + tool dispatcher + agent loop | `elena-core::step`, `consume_stream`, parallel tool exec |
-| 4     | Context packer + cascade router + episodic memory | `elena-context`, `elena-router`, `elena-memory` |
+| 4     | Context packer + cascade router + episodic memory | `elena-context` (the original `elena-memory` crate was inlined here in Q14), `elena-router` |
 | 5     | Gateway + worker + JetStream transport | `elena-gateway`, `elena-worker` |
 | 6     | Plugin sidecars (gRPC) + admin routes | `elena-plugins`, `elena-admin` |
 | 7     | Multi-tenant rate limits + workspace allow-lists + per-tenant credentials + per-tenant audit | A1–A5 sub-tasks |
@@ -200,3 +209,5 @@ the source) is documented inline at each touchpoint and consolidated in
 | Tune the autonomy / approval policy | `crates/elena-core/src/dispatch_decision.rs` |
 | Wire per-tenant credentials for a new connector | Add `resolve_token` (or per-key helper) at the top of the connector's `lib.rs`; read from `tonic::Request::metadata()` and fall back to env |
 | Investigate a failing turn | Query `audit_events` by `(tenant_id, thread_id)`; the `kind` column tags `tool_use`, `tool_result`, `approval_decision`, etc. |
+| Drop a tenant + all its data | `DELETE /admin/v1/tenants/:id` (cascading; `crates/elena-admin/src/tenants.rs::delete_tenant`) |
+| Run the multi-tenant fire-test | `cargo run --release -p elena-tri-tenant-firetest -- --threads-per-tenant 50 --duration-secs 90` (testcontainer harness; report at `/tmp/elena-firetest-report.md`) |
