@@ -273,7 +273,8 @@ CANCEL_OUT=$(WS_URL="$WS_BASE/v1/threads/$CANCEL_THREAD/stream" JWT="$JWT" \
     setTimeout(() => ws.send(JSON.stringify({ action: 'abort' })), 300);
   });
   ws.on('message', (m) => {
-    const ev = JSON.parse(m.toString());
+    const raw = JSON.parse(m.toString());
+    const ev = (typeof raw.offset === 'number' && raw.event && typeof raw.event === 'object') ? raw.event : raw;
     if (ev.event === 'done') { done = true; console.log(ev.reason); clearTimeout(t); ws.close(); }
   });
   ws.on('error', (e) => { if (!done) console.log('err:' + e.message); });
