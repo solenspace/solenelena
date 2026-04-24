@@ -7,7 +7,6 @@ members = [
     "crates/elena-llm",
     "crates/elena-tools",
     "crates/elena-context",
-    "crates/elena-memory",
     "crates/elena-router",
     "crates/elena-core",
     "crates/elena-gateway",
@@ -17,21 +16,14 @@ members = [
     "crates/elena-auth",
     "crates/elena-admin",
     "crates/elena-embedded-plugins",
-    "bins/elena-phase1-smoke",
-    "bins/elena-phase2-smoke",
-    "bins/elena-phase3-smoke",
-    "bins/elena-phase4-smoke",
-    "bins/elena-phase5-smoke",
-    "bins/elena-phase6-smoke",
     "bins/elena-phase7-smoke",
-    "bins/elena-connector-echo",
+    "crates/elena-connector-echo",
     "bins/elena-connector-slack",
     "bins/elena-connector-notion",
     "bins/elena-connector-sheets",
     "bins/elena-connector-shopify",
     "bins/elena-hannlys-smoke",
     "bins/elena-server",
-    "bins/elena-slack-smoke",
     "bins/elena-solen-smoke",
 ]
 
@@ -139,6 +131,7 @@ smallvec         = { version = "1.13", features = ["serde"] }
 # Phase 3: async trait objects + concurrent registry
 async-trait = "0.1"
 dashmap     = "6"
+moka        = { version = "0.12", features = ["future"] }
 
 # Phase 4: ONNX embeddings + HuggingFace tokenizer
 ort        = { version = "2.0.0-rc.10", default-features = false, features = ["std", "ndarray", "load-dynamic"] }
@@ -188,7 +181,7 @@ elena-plugins = { path = "crates/elena-plugins" }
 elena-observability = { path = "crates/elena-observability" }
 elena-auth = { path = "crates/elena-auth" }
 elena-admin = { path = "crates/elena-admin" }
-elena-connector-echo    = { path = "bins/elena-connector-echo" }
+elena-connector-echo    = { path = "crates/elena-connector-echo" }
 elena-connector-slack   = { path = "bins/elena-connector-slack" }
 elena-connector-notion  = { path = "bins/elena-connector-notion" }
 elena-connector-sheets  = { path = "bins/elena-connector-sheets" }

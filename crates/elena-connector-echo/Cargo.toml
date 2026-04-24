@@ -1,7 +1,7 @@
 [package]
 name         = "elena-connector-echo"
 version      = "0.1.0"
-description  = "Reference Elena plugin sidecar — exposes a single `reverse` action."
+description  = "Reference Elena plugin connector — exposes a single `reverse` action. Used in-process by elena-embedded-plugins, elena-plugins integration tests, and the phase-7 smoke."
 edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
@@ -10,13 +10,14 @@ publish      = false
 [lints]
 workspace = true
 
+# Q6 — Pre-Q6 this crate also shipped a `[[bin]]` target so it could
+# run as a standalone gRPC sidecar. The only real consumers
+# (embedded-plugins, the plugins end-to-end test, the phase-7 smoke)
+# all pull in the library form, so the crate now lives under `crates/`
+# and the binary target is gone.
 [lib]
 name = "elena_connector_echo"
 path = "src/lib.rs"
-
-[[bin]]
-name = "elena-connector-echo"
-path = "src/main.rs"
 
 [dependencies]
 elena-plugins = { workspace = true }

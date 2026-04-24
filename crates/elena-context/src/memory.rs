@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
-use elena_context::Embedder;
 use elena_store::{Episode, EpisodeStore, ThreadStore};
 use elena_types::{EpisodeId, Outcome, StoreError, TenantId, ThreadId, WorkspaceId};
 use tracing::warn;
 
+use crate::Embedder;
 use crate::summary::extract_summary;
 
 /// Per-workspace episodic memory.

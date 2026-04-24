@@ -1,9 +1,10 @@
 //! Extract a compact episode summary from a completed thread's message log.
 //!
-//! Phase 4 uses a pragmatic non-LLM heuristic: the first user message's
-//! text, truncated to 400 characters. That captures the user's stated task
-//! 95% of the time and costs nothing to compute. Phase 4+ can swap this for
-//! `Summarizer` (LLM-backed) if retrieval quality proves insufficient.
+//! Uses a pragmatic non-LLM heuristic: the first user message's text,
+//! truncated to 400 characters. That captures the user's stated task
+//! 95% of the time and costs nothing to compute. A swap to
+//! `Summarizer` (LLM-backed) is possible later if retrieval quality
+//! proves insufficient.
 
 use elena_types::{ContentBlock, Message, MessageKind, Role};
 
