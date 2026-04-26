@@ -100,13 +100,21 @@ repo-external and cannot be expressed as code.
    `origin/main`.
 
 2. **Provision `RAILWAY_TOKEN`.**
-   ```sh
-   railway login
-   railway tokens create --name github-actions --project <project-id>
-   ```
-   Paste the token into GitHub repo Settings → Secrets and variables →
-   Actions → New repository secret named `RAILWAY_TOKEN`. Project-scoped
-   tokens are preferred over account-scoped (`RAILWAY_API_TOKEN`).
+   Generate an account-scoped token at
+   https://railway.com/account/tokens → "Create New Token". Add it as a
+   GitHub Environment secret on the `production` environment (Settings
+   → Environments → production → Add secret) with the name
+   `RAILWAY_TOKEN`. The deploy job pins the target via explicit
+   `--project`, `--service`, and `--environment` flags, so the token
+   only needs account-level access — no per-project scoping required.
+
+   The current values baked into `ci.yml`:
+   - project  `50b379da-82af-42a5-b88f-fc76a2c3dfc2` (elena)
+   - service  `07e3776c-6b83-41c6-a158-661f9c3022c2` (elena-server)
+   - environment `production`
+
+   If the project / service is recreated, update the IDs in
+   `.github/workflows/ci.yml` (deploy job).
 
 3. **(Recommended) Create the `production` GitHub Environment.**
    Settings → Environments → New environment → name `production`. Add
