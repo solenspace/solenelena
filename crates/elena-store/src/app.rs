@@ -7,10 +7,23 @@
 use chrono::{DateTime, Utc};
 use elena_types::{App, AppId, AppSlug, StoreError};
 use serde_json::Value;
-use sqlx::{PgPool, Row, postgres::PgRow};
+use sqlx::{PgPool, QueryBuilder, Row, postgres::PgRow};
 use tracing::instrument;
 
 use crate::sql_error::{classify_serde, classify_sqlx};
+
+/// Aggregate token usage across every tenant attached to one app, summed
+/// over a time window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AppUsageSummary {
+    /// Total tokens billed (sum of `messages.token_count`).
+    pub tokens_total: u64,
+    /// Number of distinct tenants under the app that produced any usage
+    /// in the window.
+    pub tenant_count: u32,
+    /// Number of distinct threads contributing to the usage.
+    pub thread_count: u32,
+}
 
 /// CRUD over the `apps` table.
 #[derive(Debug, Clone)]
@@ -145,6 +158,47 @@ impl AppStore {
             return Err(StoreError::Database(format!("no app {id}")));
         }
         Ok(())
+    }
+
+    /// Sum token usage across every tenant under an app, optionally
+    /// bounded to a `[since, until)` window. Soft-deleted tenants are
+    /// excluded.
+    #[instrument(skip(self))]
+    pub async fn usage_summary(
+        &self,
+        id: AppId,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<AppUsageSummary, StoreError> {
+        let mut qb = QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT
+                 COALESCE(SUM(m.token_count), 0)::bigint AS tokens_total,
+                 COUNT(DISTINCT t.id)                    AS tenant_count,
+                 COUNT(DISTINCT m.thread_id)             AS thread_count
+             FROM messages m
+             JOIN tenants t ON t.id = m.tenant_id
+             WHERE t.app_id = ",
+        );
+        qb.push_bind(id.as_uuid());
+        qb.push(" AND t.deleted_at IS NULL");
+
+        if let Some(since) = since {
+            qb.push(" AND m.created_at >= ").push_bind(since);
+        }
+        if let Some(until) = until {
+            qb.push(" AND m.created_at < ").push_bind(until);
+        }
+
+        let row = qb.build().fetch_one(&self.pool).await.map_err(classify_sqlx)?;
+        let tokens_total: i64 = row.try_get("tokens_total").map_err(classify_sqlx)?;
+        let tenant_count: i64 = row.try_get("tenant_count").map_err(classify_sqlx)?;
+        let thread_count: i64 = row.try_get("thread_count").map_err(classify_sqlx)?;
+
+        Ok(AppUsageSummary {
+            tokens_total: u64::try_from(tokens_total).unwrap_or(0),
+            tenant_count: u32::try_from(tenant_count).unwrap_or(0),
+            thread_count: u32::try_from(thread_count).unwrap_or(0),
+        })
     }
 }
 

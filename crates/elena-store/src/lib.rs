@@ -40,7 +40,7 @@ use std::sync::Arc;
 use elena_config::ElenaConfig;
 use elena_types::StoreError;
 
-pub use app::AppStore;
+pub use app::{AppStore, AppUsageSummary};
 pub use approvals::ApprovalsStore;
 pub use audit::{
     AUDIT_CHANNEL_CAP, AuditEvent, AuditSink, DropCallback, NullAuditSink, PostgresAuditSink,

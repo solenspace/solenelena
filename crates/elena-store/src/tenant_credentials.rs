@@ -226,11 +226,15 @@ impl TenantCredentialsStore {
         Ok(result.rows_affected())
     }
 
-    /// List the plugin IDs a tenant has credentials for. Used by the
-    /// admin UI to show which integrations are wired up.
-    pub async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<String>, StoreError> {
+    /// List the plugin IDs a tenant has credentials for, paired with the
+    /// row's `updated_at`. Plaintext values never leave the database.
+    pub async fn list_for_tenant(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<(String, chrono::DateTime<chrono::Utc>)>, StoreError> {
         let rows = sqlx::query(
-            "SELECT plugin_id FROM tenant_credentials WHERE tenant_id = $1
+            "SELECT plugin_id, updated_at FROM tenant_credentials
+             WHERE tenant_id = $1
              ORDER BY plugin_id",
         )
         .bind(tenant_id.as_uuid())
@@ -239,7 +243,10 @@ impl TenantCredentialsStore {
         .map_err(classify_sqlx)?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
-            out.push(row.try_get::<String, _>("plugin_id").map_err(classify_sqlx)?);
+            let plugin_id: String = row.try_get("plugin_id").map_err(classify_sqlx)?;
+            let updated_at: chrono::DateTime<chrono::Utc> =
+                row.try_get("updated_at").map_err(classify_sqlx)?;
+            out.push((plugin_id, updated_at));
         }
         Ok(out)
     }
