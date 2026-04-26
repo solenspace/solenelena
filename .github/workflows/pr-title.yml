@@ -1,0 +1,44 @@
+name: PR title
+
+# Mirrors .githooks/commit-msg. Required because squash-merges replace
+# individual commits with the PR title — without this, a clean commit
+# history can be undone at merge.
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate:
+    name: conventional-commit lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            chore
+            docs
+            style
+            refactor
+            test
+            perf
+            build
+            ci
+            revert
+          requireScope: false
+          subjectPattern: ^.{1,72}$
+          subjectPatternError: |
+            The PR title subject "{subject}" does not match the required pattern.
+            Subjects must be 1–72 characters. Format:
+              <type>(<scope>)?(!)?: <subject>
+            Examples:
+              feat(gateway): add JWT mint endpoint
+              fix(store): app delete pre-check uses i32 for INT4
+              docs: refresh CLAUDE.md HTTP surface
