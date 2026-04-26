@@ -5,9 +5,12 @@
 //! themselves are upserted and fetched.
 
 use chrono::{DateTime, Utc};
-use elena_types::{BudgetLimits, PermissionSet, StoreError, TenantId, TenantTier, ThreadId, Usage};
+use elena_types::{
+    AppId, BudgetLimits, PermissionSet, StoreError, TenantId, TenantTier, ThreadId, Usage,
+};
 use serde_json::Value;
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, QueryBuilder, Row};
+use tracing::instrument;
 
 use crate::sql_error::{classify_serde, classify_sqlx};
 
@@ -30,10 +33,31 @@ pub struct TenantRecord {
     /// compatibility; a non-empty list restricts which plugin IDs this
     /// tenant can see in `PluginRegistry::tools_for`.
     pub allowed_plugin_ids: Vec<String>,
+    /// Owning app, if any. `None` for tenants that predate the apps
+    /// table or were never associated with one.
+    pub app_id: Option<AppId>,
+    /// Soft-delete marker. `Some` tenants are excluded from active reads;
+    /// runtime callers (gateway, worker) treat them as nonexistent.
+    pub deleted_at: Option<DateTime<Utc>>,
     /// When the tenant row was first created.
     pub created_at: DateTime<Utc>,
     /// When the tenant row was last updated.
     pub updated_at: DateTime<Utc>,
+}
+
+/// Filter passed to [`TenantStore::list_all`].
+#[derive(Debug, Clone, Default)]
+pub struct TenantListFilter {
+    /// Only tenants attached to this app.
+    pub app_id: Option<AppId>,
+    /// Case-sensitive prefix match against `tenants.name`.
+    pub name_prefix: Option<String>,
+    /// Page size. Callers should clamp before passing through.
+    pub limit: u32,
+    /// Pagination offset (small set; offset pagination is fine).
+    pub offset: u32,
+    /// Include soft-deleted rows. Default: live rows only.
+    pub include_deleted: bool,
 }
 
 /// Running budget counters for a tenant.
@@ -59,6 +83,7 @@ impl TenantStore {
     }
 
     /// Create or update a tenant row.
+    #[instrument(skip(self, tenant), fields(tenant_id = %tenant.id))]
     pub async fn upsert_tenant(&self, tenant: &TenantRecord) -> Result<(), StoreError> {
         let budget = serde_json::to_value(tenant.budget).map_err(|e| classify_serde(&e))?;
         let permissions =
@@ -66,15 +91,19 @@ impl TenantStore {
         let metadata = serde_json::to_value(&tenant.metadata).map_err(|e| classify_serde(&e))?;
 
         sqlx::query(
-            "INSERT INTO tenants (id, name, tier, budget, permissions, metadata, allowed_plugin_ids)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
+            "INSERT INTO tenants (
+                 id, name, tier, budget, permissions, metadata,
+                 allowed_plugin_ids, app_id
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (id) DO UPDATE SET
                 name               = EXCLUDED.name,
                 tier               = EXCLUDED.tier,
                 budget             = EXCLUDED.budget,
                 permissions        = EXCLUDED.permissions,
                 metadata           = EXCLUDED.metadata,
-                allowed_plugin_ids = EXCLUDED.allowed_plugin_ids",
+                allowed_plugin_ids = EXCLUDED.allowed_plugin_ids,
+                app_id             = EXCLUDED.app_id",
         )
         .bind(tenant.id.as_uuid())
         .bind(&tenant.name)
@@ -83,6 +112,7 @@ impl TenantStore {
         .bind(permissions)
         .bind(metadata)
         .bind(&tenant.allowed_plugin_ids)
+        .bind(tenant.app_id.map(|id| id.as_uuid()))
         .execute(&self.pool)
         .await
         .map_err(classify_sqlx)?;
@@ -102,56 +132,113 @@ impl TenantStore {
         Ok(())
     }
 
-    /// Fetch a tenant record.
+    /// Fetch a tenant record. Soft-deleted rows surface as
+    /// [`StoreError::TenantNotFound`] — callers that need to inspect deleted
+    /// rows should go through [`Self::list_all`] with `include_deleted = true`.
+    #[instrument(skip(self))]
     pub async fn get_tenant(&self, id: TenantId) -> Result<TenantRecord, StoreError> {
-        let row = sqlx::query(
-            "SELECT id, name, tier, budget, permissions, metadata, allowed_plugin_ids,
-                    created_at, updated_at
-             FROM tenants WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(classify_sqlx)?;
+        let row = sqlx::query(SELECT_TENANT_BY_ID)
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(classify_sqlx)?;
 
         let Some(row) = row else { return Err(StoreError::TenantNotFound(id)) };
-
-        let id_val: uuid::Uuid = row.try_get("id").map_err(classify_sqlx)?;
-        let name: String = row.try_get("name").map_err(classify_sqlx)?;
-        let tier: String = row.try_get("tier").map_err(classify_sqlx)?;
-        let budget: Value = row.try_get("budget").map_err(classify_sqlx)?;
-        let permissions: Value = row.try_get("permissions").map_err(classify_sqlx)?;
-        let metadata: Value = row.try_get("metadata").map_err(classify_sqlx)?;
-        let allowed_plugin_ids: Vec<String> =
-            row.try_get("allowed_plugin_ids").map_err(classify_sqlx)?;
-        let created_at: DateTime<Utc> = row.try_get("created_at").map_err(classify_sqlx)?;
-        let updated_at: DateTime<Utc> = row.try_get("updated_at").map_err(classify_sqlx)?;
-
-        Ok(TenantRecord {
-            id: TenantId::from_uuid(id_val),
-            name,
-            tier: tier_from_str(&tier)?,
-            budget: serde_json::from_value(budget).map_err(|e| classify_serde(&e))?,
-            permissions: serde_json::from_value(permissions).map_err(|e| classify_serde(&e))?,
-            metadata: serde_json::from_value(metadata).map_err(|e| classify_serde(&e))?,
-            allowed_plugin_ids,
-            created_at,
-            updated_at,
-        })
+        decode_tenant(&row)
     }
 
-    /// Replace just the `allowed_plugin_ids` column.
+    /// Replace just the `allowed_plugin_ids` column. Soft-deleted tenants
+    /// are treated as nonexistent.
+    #[instrument(skip(self, allowed_plugin_ids))]
     pub async fn update_allowed_plugins(
         &self,
         id: TenantId,
         allowed_plugin_ids: &[String],
     ) -> Result<(), StoreError> {
-        let rows = sqlx::query("UPDATE tenants SET allowed_plugin_ids = $1 WHERE id = $2")
-            .bind(allowed_plugin_ids)
-            .bind(id.as_uuid())
-            .execute(&self.pool)
-            .await
-            .map_err(classify_sqlx)?;
+        let rows = sqlx::query(
+            "UPDATE tenants SET allowed_plugin_ids = $1
+             WHERE id = $2 AND deleted_at IS NULL",
+        )
+        .bind(allowed_plugin_ids)
+        .bind(id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(classify_sqlx)?;
+        if rows.rows_affected() == 0 {
+            return Err(StoreError::TenantNotFound(id));
+        }
+        Ok(())
+    }
+
+    /// List tenants with optional filtering by app, name prefix, and
+    /// soft-delete status.
+    #[instrument(skip(self, filter), fields(app_id = ?filter.app_id, limit = filter.limit))]
+    pub async fn list_all(
+        &self,
+        filter: &TenantListFilter,
+    ) -> Result<Vec<TenantRecord>, StoreError> {
+        let mut qb = QueryBuilder::<sqlx::Postgres>::new(SELECT_TENANT_COLUMNS);
+        qb.push(" FROM tenants WHERE 1 = 1");
+
+        if !filter.include_deleted {
+            qb.push(" AND deleted_at IS NULL");
+        }
+        if let Some(app_id) = filter.app_id {
+            qb.push(" AND app_id = ").push_bind(app_id.as_uuid());
+        }
+        if let Some(ref prefix) = filter.name_prefix {
+            // ILIKE with a literal prefix — the `%` is appended on the bind
+            // side so any wildcards inside the prefix are escaped by the
+            // driver, not interpreted.
+            qb.push(" AND name ILIKE ").push_bind(format!("{prefix}%"));
+        }
+
+        qb.push(" ORDER BY created_at DESC, id DESC LIMIT ")
+            .push_bind(i64::from(filter.limit))
+            .push(" OFFSET ")
+            .push_bind(i64::from(filter.offset));
+
+        let rows = qb.build().fetch_all(&self.pool).await.map_err(classify_sqlx)?;
+        rows.iter().map(decode_tenant).collect()
+    }
+
+    /// Soft-delete a tenant. Sets `deleted_at = now()` so future
+    /// reads (`get_tenant`, `update_allowed_plugins`, `list_all` without
+    /// `include_deleted`) treat it as nonexistent.
+    ///
+    /// Idempotent in the no-op direction: re-soft-deleting an already
+    /// soft-deleted tenant returns `StoreError::TenantNotFound` so admins
+    /// don't accidentally bump the timestamp.
+    #[instrument(skip(self))]
+    pub async fn soft_delete(&self, id: TenantId) -> Result<(), StoreError> {
+        let rows = sqlx::query(
+            "UPDATE tenants SET deleted_at = now()
+             WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(classify_sqlx)?;
+        if rows.rows_affected() == 0 {
+            return Err(StoreError::TenantNotFound(id));
+        }
+        Ok(())
+    }
+
+    /// Re-attach (or detach with `None`) a tenant to an app. The FK on
+    /// `tenants.app_id` enforces app existence; missing apps surface as
+    /// [`StoreError::Conflict`] from the FK violation.
+    #[instrument(skip(self))]
+    pub async fn set_app(&self, id: TenantId, app_id: Option<AppId>) -> Result<(), StoreError> {
+        let rows = sqlx::query(
+            "UPDATE tenants SET app_id = $1
+             WHERE id = $2 AND deleted_at IS NULL",
+        )
+        .bind(app_id.map(|id| id.as_uuid()))
+        .bind(id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(classify_sqlx)?;
         if rows.rows_affected() == 0 {
             return Err(StoreError::TenantNotFound(id));
         }
@@ -164,17 +251,21 @@ impl TenantStore {
     /// The hash bytes are stored verbatim — callers must SHA-256 the
     /// raw token before invoking this, and the DB CHECK enforces
     /// `octet_length = 32`.
+    #[instrument(skip(self, hash))]
     pub async fn set_admin_scope_hash(
         &self,
         id: TenantId,
         hash: Option<&[u8; 32]>,
     ) -> Result<(), StoreError> {
-        let rows = sqlx::query("UPDATE tenants SET admin_scope_hash = $1 WHERE id = $2")
-            .bind(hash.map(<[u8; 32]>::as_slice))
-            .bind(id.as_uuid())
-            .execute(&self.pool)
-            .await
-            .map_err(classify_sqlx)?;
+        let rows = sqlx::query(
+            "UPDATE tenants SET admin_scope_hash = $1
+             WHERE id = $2 AND deleted_at IS NULL",
+        )
+        .bind(hash.map(<[u8; 32]>::as_slice))
+        .bind(id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(classify_sqlx)?;
         if rows.rows_affected() == 0 {
             return Err(StoreError::TenantNotFound(id));
         }
@@ -183,12 +274,16 @@ impl TenantStore {
 
     /// Fetch the per-tenant admin-scope hash. `Ok(None)` when the
     /// tenant inherits the global admin token (no per-tenant scope set).
+    #[instrument(skip(self))]
     pub async fn get_admin_scope_hash(&self, id: TenantId) -> Result<Option<[u8; 32]>, StoreError> {
-        let row = sqlx::query("SELECT admin_scope_hash FROM tenants WHERE id = $1")
-            .bind(id.as_uuid())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(classify_sqlx)?;
+        let row = sqlx::query(
+            "SELECT admin_scope_hash FROM tenants
+             WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(classify_sqlx)?;
         let Some(row) = row else { return Err(StoreError::TenantNotFound(id)) };
         let raw: Option<Vec<u8>> = row.try_get("admin_scope_hash").map_err(classify_sqlx)?;
         match raw {
@@ -313,6 +408,42 @@ impl TenantStore {
         let used: i64 = row.try_get("tokens_used").map_err(classify_sqlx)?;
         Ok(u64::try_from(used).unwrap_or(0))
     }
+}
+
+const SELECT_TENANT_COLUMNS: &str = "SELECT id, name, tier, budget, permissions, metadata,
+            allowed_plugin_ids, app_id, deleted_at, created_at, updated_at";
+
+const SELECT_TENANT_BY_ID: &str = "SELECT id, name, tier, budget, permissions, metadata,
+            allowed_plugin_ids, app_id, deleted_at, created_at, updated_at
+     FROM tenants WHERE id = $1 AND deleted_at IS NULL";
+
+fn decode_tenant(row: &sqlx::postgres::PgRow) -> Result<TenantRecord, StoreError> {
+    let id_val: uuid::Uuid = row.try_get("id").map_err(classify_sqlx)?;
+    let name: String = row.try_get("name").map_err(classify_sqlx)?;
+    let tier: String = row.try_get("tier").map_err(classify_sqlx)?;
+    let budget: Value = row.try_get("budget").map_err(classify_sqlx)?;
+    let permissions: Value = row.try_get("permissions").map_err(classify_sqlx)?;
+    let metadata: Value = row.try_get("metadata").map_err(classify_sqlx)?;
+    let allowed_plugin_ids: Vec<String> =
+        row.try_get("allowed_plugin_ids").map_err(classify_sqlx)?;
+    let app_id: Option<uuid::Uuid> = row.try_get("app_id").map_err(classify_sqlx)?;
+    let deleted_at: Option<DateTime<Utc>> = row.try_get("deleted_at").map_err(classify_sqlx)?;
+    let created_at: DateTime<Utc> = row.try_get("created_at").map_err(classify_sqlx)?;
+    let updated_at: DateTime<Utc> = row.try_get("updated_at").map_err(classify_sqlx)?;
+
+    Ok(TenantRecord {
+        id: TenantId::from_uuid(id_val),
+        name,
+        tier: tier_from_str(&tier)?,
+        budget: serde_json::from_value(budget).map_err(|e| classify_serde(&e))?,
+        permissions: serde_json::from_value(permissions).map_err(|e| classify_serde(&e))?,
+        metadata: serde_json::from_value(metadata).map_err(|e| classify_serde(&e))?,
+        allowed_plugin_ids,
+        app_id: app_id.map(AppId::from_uuid),
+        deleted_at,
+        created_at,
+        updated_at,
+    })
 }
 
 fn tier_str(t: TenantTier) -> &'static str {

@@ -17,8 +17,10 @@
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod app;
 mod approvals;
 mod audit;
+mod audit_read;
 mod cache;
 mod episode;
 mod pg;
@@ -38,10 +40,12 @@ use std::sync::Arc;
 use elena_config::ElenaConfig;
 use elena_types::StoreError;
 
+pub use app::AppStore;
 pub use approvals::ApprovalsStore;
 pub use audit::{
     AUDIT_CHANNEL_CAP, AuditEvent, AuditSink, DropCallback, NullAuditSink, PostgresAuditSink,
 };
+pub use audit_read::{AuditCursor, AuditQueryFilter, AuditReadStore};
 pub use cache::SessionCache;
 pub use episode::{Episode, EpisodeStore};
 pub use plan::PlanStore;
@@ -51,10 +55,10 @@ pub use rate_limit::{
     RateDecision, RateLimiter, plugin_concurrency_key, provider_concurrency_key,
     tenant_inflight_key, tenant_rpm_key,
 };
-pub use tenant::{TenantRecord, TenantStore};
+pub use tenant::{TenantListFilter, TenantRecord, TenantStore};
 pub use tenant_credentials::TenantCredentialsStore;
-pub use thread::{MessageSummary, ThreadStore};
-pub use workspace::{WorkspaceRecord, WorkspaceStore};
+pub use thread::{MessageSummary, ThreadListFilter, ThreadRecord, ThreadStore};
+pub use workspace::{WorkspaceListFilter, WorkspaceRecord, WorkspaceStore};
 
 /// All persistence handles for Elena.
 ///
@@ -92,6 +96,11 @@ pub struct Store {
     /// (single-tenant connectors fall back to env). Hot-loaded by the
     /// worker before each plugin tool dispatch.
     pub tenant_credentials: Option<TenantCredentialsStore>,
+    /// Admin-only app registry (Solen / Hannlys / Omnii grouping above
+    /// tenants). The runtime never reads from here.
+    pub apps: AppStore,
+    /// Read-only handle to `audit_events` for the admin observability API.
+    pub audit_reads: AuditReadStore,
 }
 
 impl Store {
@@ -131,8 +140,10 @@ impl Store {
             audit,
             plugin_ownerships: PluginOwnershipStore::new(pg.clone()),
             plans: PlanStore::new(pg.clone()),
-            plan_assignments: PlanAssignmentStore::new(pg),
+            plan_assignments: PlanAssignmentStore::new(pg.clone()),
             tenant_credentials,
+            apps: AppStore::new(pg.clone()),
+            audit_reads: AuditReadStore::new(pg),
         })
     }
 

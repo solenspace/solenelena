@@ -13,7 +13,9 @@ use axum::{
 };
 use chrono::Utc;
 use elena_store::TenantRecord;
-use elena_types::{BudgetLimits, PermissionSet, Plan, PlanId, PlanSlug, TenantId, TenantTier};
+use elena_types::{
+    AppId, BudgetLimits, PermissionSet, Plan, PlanId, PlanSlug, TenantId, TenantTier,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -43,6 +45,9 @@ pub struct CreateTenantRequest {
     /// Plugin allow-list. Empty = no filter.
     #[serde(default)]
     pub allowed_plugin_ids: Vec<String>,
+    /// Optional owning app. `None` keeps the tenant detached from any app.
+    #[serde(default)]
+    pub app_id: Option<AppId>,
 }
 
 /// Response shape for tenant reads.
@@ -106,6 +111,8 @@ pub async fn create_tenant(
         permissions: req.permissions.unwrap_or_default(),
         metadata: req.metadata,
         allowed_plugin_ids: req.allowed_plugin_ids,
+        app_id: req.app_id,
+        deleted_at: None,
         created_at: now,
         updated_at: now,
     };

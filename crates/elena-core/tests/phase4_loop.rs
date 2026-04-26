@@ -125,6 +125,8 @@ async fn harness(embedder: Arc<dyn Embedder>) -> Harness {
             permissions: PermissionSet::default(),
             metadata: HashMap::new(),
             allowed_plugin_ids: vec![],
+            app_id: None,
+            deleted_at: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         })
