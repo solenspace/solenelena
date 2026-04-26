@@ -84,6 +84,8 @@ async fn harness() -> (Arc<Store>, TenantId, elena_types::ThreadId) {
             permissions: PermissionSet::default(),
             metadata: std::collections::HashMap::new(),
             allowed_plugin_ids: vec![],
+            app_id: None,
+            deleted_at: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         })

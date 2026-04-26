@@ -14,14 +14,19 @@
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
-use elena_types::{TenantId, WorkspaceId};
+use chrono::{DateTime, Utc};
+use elena_store::WorkspaceListFilter;
+use elena_types::{AppId, TenantId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
 use crate::state::AdminState;
+
+const DEFAULT_LIST_LIMIT: u32 = 50;
+const MAX_LIST_LIMIT: u32 = 200;
 
 /// Request body for `POST /admin/v1/workspaces`.
 #[derive(Debug, Deserialize)]
@@ -188,4 +193,91 @@ pub async fn update_allowed_plugins(
 pub struct TenantQuery {
     /// Owning tenant — enforced at the store layer via `tenant_id` filter.
     pub tenant_id: TenantId,
+}
+
+/// Query for `GET /admin/v1/workspaces`.
+#[derive(Debug, Deserialize, Default)]
+pub struct ListWorkspacesQuery {
+    /// Restrict to one tenant.
+    #[serde(default)]
+    pub tenant_id: Option<TenantId>,
+    /// Restrict to workspaces under this app (joins via `tenants.app_id`).
+    #[serde(default)]
+    pub app_id: Option<AppId>,
+    /// Page size.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Offset.
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+/// Listing projection — drops `global_instructions` to keep the page size
+/// small (instructions can be many KB).
+#[derive(Debug, Serialize)]
+pub struct WorkspaceSummary {
+    /// Stable workspace id.
+    pub id: WorkspaceId,
+    /// Owning tenant.
+    pub tenant_id: TenantId,
+    /// Display name.
+    pub name: Option<String>,
+    /// Allow-list.
+    pub allowed_plugin_ids: Vec<String>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// `GET /admin/v1/workspaces` — list with optional tenant/app filter.
+pub async fn list_workspaces(
+    State(state): State<AdminState>,
+    Query(q): Query<ListWorkspacesQuery>,
+) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT);
+    let filter = WorkspaceListFilter {
+        tenant_id: q.tenant_id,
+        app_id: q.app_id,
+        limit,
+        offset: q.offset.unwrap_or(0),
+    };
+    match state.store.workspaces.list_all(&filter).await {
+        Ok(rows) => {
+            let body: Vec<WorkspaceSummary> = rows
+                .into_iter()
+                .map(|w| WorkspaceSummary {
+                    id: w.id,
+                    tenant_id: w.tenant_id,
+                    name: w.name,
+                    allowed_plugin_ids: w.allowed_plugin_ids,
+                    created_at: w.created_at,
+                    updated_at: w.updated_at,
+                })
+                .collect();
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(e) => {
+            tracing::error!(?e, "list_workspaces failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+/// `DELETE /admin/v1/workspaces/:id?tenant_id=` — delete a workspace.
+pub async fn delete_workspace(
+    State(state): State<AdminState>,
+    Path(id): Path<WorkspaceId>,
+    Query(q): Query<TenantQuery>,
+) -> impl IntoResponse {
+    match state.store.workspaces.delete(q.tenant_id, id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(elena_types::StoreError::Database(msg)) if msg.starts_with("no workspace ") => {
+            (StatusCode::NOT_FOUND, format!("workspace {id} not found")).into_response()
+        }
+        Err(e) => {
+            tracing::error!(?e, "delete_workspace failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
 }

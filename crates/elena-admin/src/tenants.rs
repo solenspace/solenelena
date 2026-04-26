@@ -7,13 +7,16 @@ use std::collections::HashMap;
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
+use chrono::DateTime;
 use chrono::Utc;
-use elena_store::TenantRecord;
-use elena_types::{BudgetLimits, PermissionSet, Plan, PlanId, PlanSlug, TenantId, TenantTier};
+use elena_store::{TenantListFilter, TenantRecord};
+use elena_types::{
+    AppId, BudgetLimits, PermissionSet, Plan, PlanId, PlanSlug, TenantId, TenantTier,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -43,6 +46,9 @@ pub struct CreateTenantRequest {
     /// Plugin allow-list. Empty = no filter.
     #[serde(default)]
     pub allowed_plugin_ids: Vec<String>,
+    /// Optional owning app. `None` keeps the tenant detached from any app.
+    #[serde(default)]
+    pub app_id: Option<AppId>,
 }
 
 /// Response shape for tenant reads.
@@ -106,6 +112,8 @@ pub async fn create_tenant(
         permissions: req.permissions.unwrap_or_default(),
         metadata: req.metadata,
         allowed_plugin_ids: req.allowed_plugin_ids,
+        app_id: req.app_id,
+        deleted_at: None,
         created_at: now,
         updated_at: now,
     };
@@ -262,6 +270,134 @@ pub async fn set_admin_scope(
         }
         Err(e) => {
             tracing::error!(?e, %id, "set_admin_scope failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+const DEFAULT_LIST_LIMIT: u32 = 50;
+const MAX_LIST_LIMIT: u32 = 200;
+
+/// Query for `GET /admin/v1/tenants`.
+#[derive(Debug, Deserialize, Default)]
+pub struct ListTenantsQuery {
+    /// Filter by owning app.
+    #[serde(default)]
+    pub app_id: Option<AppId>,
+    /// Case-sensitive name prefix.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Page size (default 50, max 200).
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Offset.
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// Include soft-deleted tenants.
+    #[serde(default)]
+    pub include_deleted: bool,
+}
+
+/// Listing projection — drops the heavy `metadata` map and `permissions`.
+#[derive(Debug, Serialize)]
+pub struct TenantSummary {
+    /// Tenant id.
+    pub id: TenantId,
+    /// Display name.
+    pub name: String,
+    /// Pricing tier.
+    pub tier: TenantTier,
+    /// Owning app, if any.
+    pub app_id: Option<AppId>,
+    /// Soft-delete marker.
+    pub deleted_at: Option<DateTime<Utc>>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<TenantRecord> for TenantSummary {
+    fn from(t: TenantRecord) -> Self {
+        Self {
+            id: t.id,
+            name: t.name,
+            tier: t.tier,
+            app_id: t.app_id,
+            deleted_at: t.deleted_at,
+            created_at: t.created_at,
+        }
+    }
+}
+
+/// `GET /admin/v1/tenants` — list tenants.
+pub async fn list_tenants(
+    State(state): State<AdminState>,
+    Query(q): Query<ListTenantsQuery>,
+) -> impl IntoResponse {
+    let filter = TenantListFilter {
+        app_id: q.app_id,
+        name_prefix: q.name,
+        limit: q.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT),
+        offset: q.offset.unwrap_or(0),
+        include_deleted: q.include_deleted,
+    };
+    match state.store.tenants.list_all(&filter).await {
+        Ok(rows) => {
+            let body: Vec<TenantSummary> = rows.into_iter().map(TenantSummary::from).collect();
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(e) => {
+            tracing::error!(?e, "list_tenants failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+/// Body for `PATCH /admin/v1/tenants/:id/app`.
+#[derive(Debug, Deserialize)]
+pub struct SetAppRequest {
+    /// Owning app. `None` detaches the tenant.
+    pub app_id: Option<AppId>,
+}
+
+/// `PATCH /admin/v1/tenants/:id/app` — attach/detach a tenant from an app.
+pub async fn set_app(
+    State(state): State<AdminState>,
+    Path(id): Path<TenantId>,
+    headers: HeaderMap,
+    Json(req): Json<SetAppRequest>,
+) -> impl IntoResponse {
+    if let Err(s) = require_tenant_scope(&state.store, id, &headers).await {
+        return s.into_response();
+    }
+    match state.store.tenants.set_app(id, req.app_id).await {
+        Ok(()) => (StatusCode::OK, "updated").into_response(),
+        Err(elena_types::StoreError::TenantNotFound(_)) => {
+            (StatusCode::NOT_FOUND, format!("tenant {id} not found")).into_response()
+        }
+        Err(elena_types::StoreError::Conflict(msg)) => (StatusCode::CONFLICT, msg).into_response(),
+        Err(e) => {
+            tracing::error!(?e, %id, "set_app failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+/// `DELETE /admin/v1/tenants/:id` — soft-delete a tenant.
+pub async fn delete_tenant(
+    State(state): State<AdminState>,
+    Path(id): Path<TenantId>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(s) = require_tenant_scope(&state.store, id, &headers).await {
+        return s.into_response();
+    }
+    match state.store.tenants.soft_delete(id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(elena_types::StoreError::TenantNotFound(_)) => {
+            (StatusCode::NOT_FOUND, format!("tenant {id} not found")).into_response()
+        }
+        Err(e) => {
+            tracing::error!(?e, %id, "delete_tenant failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

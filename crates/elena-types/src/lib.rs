@@ -19,6 +19,7 @@
 // issues, and re-implementing each as `?` would muddy intent.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod app;
 pub mod autonomy;
 pub mod cache;
 pub mod error;
@@ -34,12 +35,13 @@ pub mod terminal;
 pub mod transport;
 pub mod usage;
 
+pub use app::{App, AppSlug};
 pub use autonomy::{ApprovalDecision, ApprovalVerdict, AutonomyMode, PendingApproval};
 pub use cache::{CacheControl, CacheControlKind, CacheScope, CacheTtl};
 pub use error::{ConfigError, ElenaError, LlmApiError, LlmApiErrorKind, StoreError, ToolError};
 pub use id::{
-    EpisodeId, IdParseError, MessageId, PlanAssignmentId, PlanId, PluginId, RequestId, SessionId,
-    TenantId, ThreadId, ToolCallId, UserId, WorkspaceId,
+    AppId, EpisodeId, IdParseError, MessageId, PlanAssignmentId, PlanId, PluginId, RequestId,
+    SessionId, TenantId, ThreadId, ToolCallId, UserId, WorkspaceId,
 };
 pub use memory::Outcome;
 pub use message::{

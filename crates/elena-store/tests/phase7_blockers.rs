@@ -88,6 +88,8 @@ fn bare_tenant(id: TenantId) -> TenantRecord {
         permissions: PermissionSet::default(),
         metadata: HashMap::new(),
         allowed_plugin_ids: vec![],
+        app_id: None,
+        deleted_at: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }

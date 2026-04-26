@@ -134,6 +134,8 @@ async fn start_harness_with_budget(budget: BudgetLimits, max_turns: u32) -> Harn
         permissions: PermissionSet::default(),
         metadata: HashMap::new(),
         allowed_plugin_ids: vec![],
+        app_id: None,
+        deleted_at: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

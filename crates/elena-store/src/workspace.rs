@@ -16,10 +16,24 @@
 //! treats a missing row as "no overrides".
 
 use chrono::{DateTime, Utc};
-use elena_types::{StoreError, TenantId, WorkspaceId};
-use sqlx::{PgPool, Row, postgres::PgRow};
+use elena_types::{AppId, StoreError, TenantId, WorkspaceId};
+use sqlx::{PgPool, QueryBuilder, Row, postgres::PgRow};
+use tracing::instrument;
 
 use crate::sql_error::classify_sqlx;
+
+/// Filter passed to [`WorkspaceStore::list_all`].
+#[derive(Debug, Clone, Default)]
+pub struct WorkspaceListFilter {
+    /// Restrict to a single tenant.
+    pub tenant_id: Option<TenantId>,
+    /// Restrict to workspaces whose owning tenant is attached to this app.
+    pub app_id: Option<AppId>,
+    /// Page size.
+    pub limit: u32,
+    /// Pagination offset.
+    pub offset: u32,
+}
 
 /// Hydrated workspace row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +207,7 @@ impl WorkspaceStore {
     }
 
     /// List all workspaces for a tenant, ordered by creation time.
+    #[instrument(skip(self))]
     pub async fn list_by_tenant(
         &self,
         tenant_id: TenantId,
@@ -209,6 +224,64 @@ impl WorkspaceStore {
         .map_err(classify_sqlx)?;
 
         rows.iter().map(decode_workspace).collect()
+    }
+
+    /// List workspaces with optional filtering by tenant and app.
+    #[instrument(skip(self, filter))]
+    pub async fn list_all(
+        &self,
+        filter: &WorkspaceListFilter,
+    ) -> Result<Vec<WorkspaceRecord>, StoreError> {
+        let mut qb = QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT w.id, w.tenant_id, w.name, w.global_instructions, w.allowed_plugin_ids,
+                    w.created_at, w.updated_at
+             FROM workspaces w",
+        );
+
+        if filter.app_id.is_some() {
+            qb.push(" JOIN tenants t ON t.id = w.tenant_id");
+        }
+
+        qb.push(" WHERE 1 = 1");
+
+        if let Some(tenant_id) = filter.tenant_id {
+            qb.push(" AND w.tenant_id = ").push_bind(tenant_id.as_uuid());
+        }
+        if let Some(app_id) = filter.app_id {
+            qb.push(" AND t.app_id = ").push_bind(app_id.as_uuid());
+            qb.push(" AND t.deleted_at IS NULL");
+        }
+
+        qb.push(" ORDER BY w.created_at DESC, w.id DESC LIMIT ")
+            .push_bind(i64::from(filter.limit))
+            .push(" OFFSET ")
+            .push_bind(i64::from(filter.offset));
+
+        let rows = qb.build().fetch_all(&self.pool).await.map_err(classify_sqlx)?;
+        rows.iter().map(decode_workspace).collect()
+    }
+
+    /// Delete a workspace, scoped to its owning tenant. Returns
+    /// [`StoreError::Database`] when no row matched (the handler maps
+    /// that to a 404).
+    #[instrument(skip(self))]
+    pub async fn delete(
+        &self,
+        tenant_id: TenantId,
+        workspace_id: WorkspaceId,
+    ) -> Result<(), StoreError> {
+        let rows = sqlx::query("DELETE FROM workspaces WHERE id = $1 AND tenant_id = $2")
+            .bind(workspace_id.as_uuid())
+            .bind(tenant_id.as_uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(classify_sqlx)?;
+        if rows.rows_affected() == 0 {
+            return Err(StoreError::Database(format!(
+                "no workspace {workspace_id} for tenant {tenant_id}"
+            )));
+        }
+        Ok(())
     }
 }
 

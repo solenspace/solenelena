@@ -14,8 +14,9 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
+use chrono::{DateTime, Utc};
 use elena_types::TenantId;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::require_tenant_scope;
 use crate::state::AdminState;
@@ -83,6 +84,52 @@ pub async fn delete_credentials(
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => {
             tracing::error!(?e, %tenant_id, %plugin_id, "tenant credentials delete failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+/// One row in the credential-listing response. Plaintext values are never
+/// surfaced — only the plugin id and the row's `updated_at`.
+#[derive(Debug, Serialize)]
+pub struct CredentialEntry {
+    /// Plugin the credentials belong to.
+    pub plugin_id: String,
+    /// Always `true` — the row exists. Kept as a field so the wire shape
+    /// matches what the admin panel renders ("provisioned" / "missing").
+    pub has_credentials: bool,
+    /// When the credentials were last upserted.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// `GET /admin/v1/tenants/:tenant_id/credentials` — list which plugins
+/// have credentials provisioned. Plaintext values stay encrypted in the
+/// database.
+pub async fn list_credentials(
+    State(state): State<AdminState>,
+    Path(tenant_id): Path<TenantId>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(s) = require_tenant_scope(&state.store, tenant_id, &headers).await {
+        return s.into_response();
+    }
+    let Some(creds) = state.store.tenant_credentials.as_ref() else {
+        return (StatusCode::OK, Json(Vec::<CredentialEntry>::new())).into_response();
+    };
+    match creds.list_for_tenant(tenant_id).await {
+        Ok(rows) => {
+            let body: Vec<CredentialEntry> = rows
+                .into_iter()
+                .map(|(plugin_id, updated_at)| CredentialEntry {
+                    plugin_id,
+                    has_credentials: true,
+                    updated_at,
+                })
+                .collect();
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(e) => {
+            tracing::error!(?e, %tenant_id, "list_credentials failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
