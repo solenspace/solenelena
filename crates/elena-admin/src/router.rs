@@ -22,14 +22,8 @@ pub fn admin_router(state: AdminState) -> Router {
     Router::new()
         // App registry — admin grouping above tenants.
         .route("/apps", post(apps::create_app).get(apps::list_apps))
-        .route(
-            "/apps/{id}",
-            get(apps::get_app).patch(apps::update_app).delete(apps::delete_app),
-        )
-        .route(
-            "/apps/{id}/tenants",
-            get(apps::list_app_tenants).post(apps::onboard_tenant),
-        )
+        .route("/apps/{id}", get(apps::get_app).patch(apps::update_app).delete(apps::delete_app))
+        .route("/apps/{id}/tenants", get(apps::list_app_tenants).post(apps::onboard_tenant))
         .route("/apps/{id}/usage-summary", get(budget::get_usage_summary))
         // Tenants — existing CRUD plus list / delete / set-app.
         .route("/tenants", post(tenants::create_tenant).get(tenants::list_tenants))

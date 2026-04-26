@@ -83,9 +83,7 @@ pub async fn ws_upgrade(
     let upgrade = if let Some(matched) = headers
         .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| {
-            s.split(',').map(str::trim).find(|p| p.starts_with("elena.bearer."))
-        })
+        .and_then(|s| s.split(',').map(str::trim).find(|p| p.starts_with("elena.bearer.")))
         .map(str::to_owned)
     {
         upgrade.protocols([matched])

@@ -198,10 +198,7 @@ pub async fn list_apps(
 }
 
 /// `GET /admin/v1/apps/:id` — fetch one app.
-pub async fn get_app(
-    State(state): State<AdminState>,
-    Path(id): Path<AppId>,
-) -> impl IntoResponse {
+pub async fn get_app(State(state): State<AdminState>, Path(id): Path<AppId>) -> impl IntoResponse {
     match state.store.apps.get(id).await {
         Ok(Some(app)) => (StatusCode::OK, Json(AppResponse::from(app))).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, format!("app {id} not found")).into_response(),
@@ -372,11 +369,7 @@ pub async fn onboard_tenant(
     (StatusCode::CREATED, Json(TenantSummary::from(tenant))).into_response()
 }
 
-fn build_default_plan(
-    app: &App,
-    tenant: &TenantRecord,
-    now: chrono::DateTime<Utc>,
-) -> Plan {
+fn build_default_plan(app: &App, tenant: &TenantRecord, now: chrono::DateTime<Utc>) -> Plan {
     let template = app.default_plan_template.as_ref();
     let slug = template
         .and_then(|t| t.get("slug").and_then(|v| v.as_str()))
@@ -390,8 +383,7 @@ fn build_default_plan(
     let cache_policy = template
         .and_then(|t| t.get("cache_policy").cloned())
         .unwrap_or_else(|| serde_json::json!({}));
-    let tier_models =
-        template.and_then(|t| t.get("tier_models").cloned()).filter(|v| !v.is_null());
+    let tier_models = template.and_then(|t| t.get("tier_models").cloned()).filter(|v| !v.is_null());
     let autonomy = template
         .and_then(|t| t.get("autonomy_default").and_then(|v| v.as_str()))
         .map(elena_types::AutonomyMode::from_str_or_default)

@@ -270,14 +270,12 @@ impl WorkspaceStore {
         tenant_id: TenantId,
         workspace_id: WorkspaceId,
     ) -> Result<(), StoreError> {
-        let rows = sqlx::query(
-            "DELETE FROM workspaces WHERE id = $1 AND tenant_id = $2",
-        )
-        .bind(workspace_id.as_uuid())
-        .bind(tenant_id.as_uuid())
-        .execute(&self.pool)
-        .await
-        .map_err(classify_sqlx)?;
+        let rows = sqlx::query("DELETE FROM workspaces WHERE id = $1 AND tenant_id = $2")
+            .bind(workspace_id.as_uuid())
+            .bind(tenant_id.as_uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(classify_sqlx)?;
         if rows.rows_affected() == 0 {
             return Err(StoreError::Database(format!(
                 "no workspace {workspace_id} for tenant {tenant_id}"

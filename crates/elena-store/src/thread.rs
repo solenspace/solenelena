@@ -122,8 +122,7 @@ impl ThreadStore {
             qb.push(" AND workspace_id = ").push_bind(workspace_id.as_uuid());
         }
         if let Some(before) = filter.before {
-            qb.push(" AND last_message_at IS NOT NULL AND last_message_at < ")
-                .push_bind(before);
+            qb.push(" AND last_message_at IS NOT NULL AND last_message_at < ").push_bind(before);
         }
 
         qb.push(" ORDER BY last_message_at DESC NULLS LAST, id DESC LIMIT ")

@@ -198,4 +198,10 @@ the source) is documented inline at each touchpoint and consolidated in
 | Add an LLM provider | Implement `LlmClient` in `crates/elena-llm/src/`, register in the multiplexer in `bins/elena-server/src/main.rs::build_llm` |
 | Tune the autonomy / approval policy | `crates/elena-core/src/dispatch_decision.rs` |
 | Wire per-tenant credentials for a new connector | Add `resolve_token` (or per-key helper) at the top of the connector's `lib.rs`; read from `tonic::Request::metadata()` and fall back to env |
-| Investigate a failing turn | Query `audit_events` by `(tenant_id, thread_id)`; the `kind` column tags `tool_use`, `tool_result`, `approval_decision`, etc. |
+| Investigate a failing turn | Query `audit_events` by `(tenant_id, thread_id)`; the `kind` column tags `tool_use`, `tool_result`, `approval_decision`, etc. Or hit `GET /admin/v1/tenants/{id}/audit-events` for the same data over HTTP. |
+| Add or manage an app (Solen / Hannlys / Omnii) | `crates/elena-admin/src/apps.rs`. Apps are an admin grouping above tenants — runtime stays tenant-scoped. |
+| Onboard a tenant under an app | `POST /admin/v1/apps/{id}/tenants` — atomic create + default plan seed (`apps::onboard_tenant`). |
+| Read audit history over HTTP | `crates/elena-store/src/audit_read.rs` (keyset cursor) and `crates/elena-admin/src/audit.rs`. |
+| Observe a tenant's threads / messages | `GET /admin/v1/tenants/{id}/threads`, `/threads/{id}/messages`, `/threads/{id}/usage` (`crates/elena-admin/src/threads.rs`). |
+| Check current consumption | `GET /admin/v1/tenants/{id}/budget-state` and `GET /admin/v1/apps/{id}/usage-summary` (`crates/elena-admin/src/budget.rs`). |
+| Soft-delete a tenant | `DELETE /admin/v1/tenants/{id}` — sets `deleted_at`; runtime reads filter it out, audit history preserved. |

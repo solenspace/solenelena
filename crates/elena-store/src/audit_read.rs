@@ -65,9 +65,11 @@ impl AuditCursor {
     /// for malformed input — this is operator-supplied, so a hard error is
     /// the right surface (callers should clear the cursor on retry).
     pub fn decode(s: &str) -> Result<Self, StoreError> {
-        let bytes =
-            URL_SAFE_NO_PAD.decode(s.as_bytes()).map_err(|e| StoreError::Serialization(e.to_string()))?;
-        let raw = std::str::from_utf8(&bytes).map_err(|e| StoreError::Serialization(e.to_string()))?;
+        let bytes = URL_SAFE_NO_PAD
+            .decode(s.as_bytes())
+            .map_err(|e| StoreError::Serialization(e.to_string()))?;
+        let raw =
+            std::str::from_utf8(&bytes).map_err(|e| StoreError::Serialization(e.to_string()))?;
         let (ts, id) = raw
             .split_once('|')
             .ok_or_else(|| StoreError::Serialization("cursor missing separator".to_owned()))?;
@@ -136,7 +138,8 @@ impl AuditReadStore {
 
         let rows = qb.build().fetch_all(&self.pool).await.map_err(classify_sqlx)?;
 
-        let events: Vec<AuditEvent> = rows.iter().map(decode_audit_row).collect::<Result<_, _>>()?;
+        let events: Vec<AuditEvent> =
+            rows.iter().map(decode_audit_row).collect::<Result<_, _>>()?;
 
         let next = if events.len() == filter.limit as usize {
             events.last().map(|ev| AuditCursor { created_at: ev.created_at, id: ev.id })
