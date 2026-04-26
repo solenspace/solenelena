@@ -33,11 +33,16 @@ RUN apt-get update \
 # Copy manifests + source. Cargo's incremental cache keeps reasonable
 # rebuild speed even without layer-tricks; we keep the Dockerfile
 # straightforward.
-COPY Cargo.toml Cargo.lock rustfmt.toml ./
+COPY Cargo.toml Cargo.lock rustfmt.toml .git-sha ./
 COPY crates ./crates
 COPY bins ./bins
 
-RUN cargo build --release --bin elena-server
+# `option_env!("VERGEN_GIT_SHA")` is read at compile time by
+# `crates/elena-gateway/src/routes/health.rs`. CI writes the deploying
+# commit's SHA into `.git-sha` before `railway up`; manual builds without
+# that step inherit the committed default ("unknown").
+RUN VERGEN_GIT_SHA="$(tr -d '[:space:]' < .git-sha)" \
+    cargo build --release --bin elena-server
 
 # ---------- runtime ----------
 FROM ${DISTROLESS} AS runtime
