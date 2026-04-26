@@ -41,6 +41,17 @@ EOF
     exit 1
 fi
 
+# Remove leftover exited testcontainers from prior runs.
+# The Rust `testcontainers` crate's Ryuk-based auto-cleanup misses
+# containers when tests panic (e.g., during the disk-pressure cascade
+# we hit on 2026-04-26). Running this before tests prevents pile-up
+# from one run starving the next of host resources.
+for image in 'pgvector/pgvector:pg16' 'redis:7-alpine'; do
+    for id in $(docker ps -aq --filter "status=exited" --filter "ancestor=${image}" 2>/dev/null); do
+        docker rm "$id" >/dev/null 2>&1 || true
+    done
+done
+
 printf '\033[1;34m[pre-push]\033[0m cargo test --workspace --no-fail-fast\n'
 if ! cargo test --workspace --no-fail-fast; then
     printf '\n\033[1;31m[pre-push] tests failed.\033[0m\n'
