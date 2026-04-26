@@ -99,19 +99,24 @@ repo-external and cannot be expressed as code.
    source connected; `railway redeploy` still relies on it to fetch
    `origin/main`.
 
-2. **Provision the Railway token.**
-   Generate an account-scoped token at
-   https://railway.com/account/tokens → "Create New Token", or a
-   project-scoped one via `railway tokens create` from the linked
-   elena project. Either works. Add it as a GitHub Environment secret
-   on the `production` environment (Settings → Environments →
-   production → Add secret); the workflow accepts either of two names:
-   - `RAILWAY_API_TOKEN` (preferred for account-scoped tokens)
-   - `RAILWAY_TOKEN`     (works for both, kept for backward compat)
+2. **Provision `RAILWAY_API_TOKEN`.**
+   Generate a token at https://railway.com/account/tokens → "Create
+   New Token" — workspace-scoped (selecting "Mateo Hernandez's
+   Projects" or whichever workspace contains the elena project) is
+   sufficient; a true account-scoped token (workspace field blank)
+   also works. Add it as a GitHub Environment secret on the
+   `production` environment (Settings → Environments → production →
+   Add secret) named exactly `RAILWAY_API_TOKEN`.
+
+   **Do not also set `RAILWAY_TOKEN`** — the Railway CLI validates
+   `RAILWAY_TOKEN` first as a project-scoped token; if a workspace
+   token is provided under that name, it errors `Invalid RAILWAY_TOKEN`
+   and never falls back to `RAILWAY_API_TOKEN`. The deploy step
+   intentionally only exports `RAILWAY_API_TOKEN`.
 
    The deploy job pins the target via explicit `--project`,
-   `--service`, and `--environment` flags, so the token only needs
-   read/deploy access to that specific project.
+   `--service`, and `--environment` flags, so the token's scope just
+   needs to grant access to the elena project.
 
    The current values baked into `ci.yml`:
    - project  `50b379da-82af-42a5-b88f-fc76a2c3dfc2` (elena)
