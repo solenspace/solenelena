@@ -1,0 +1,51 @@
+#!/bin/sh
+# Pre-push: full workspace verification before code leaves the laptop.
+#   cargo fmt --all -- --check
+#   cargo clippy --workspace --all-targets -- -D warnings
+#   cargo test --workspace --no-fail-fast        (Docker required)
+#
+# Bypass: git push --no-verify, or SKIP_HOOKS=1 git push ...
+set -eu
+
+if [ "${SKIP_HOOKS:-0}" = "1" ]; then
+    exit 0
+fi
+
+printf '\033[1;34m[pre-push]\033[0m cargo fmt --all -- --check\n'
+if ! cargo fmt --all -- --check; then
+    printf '\n\033[1;31m[pre-push] formatting failed.\033[0m Fix: cargo fmt --all\n'
+    printf 'Bypass: git push --no-verify (or SKIP_HOOKS=1).\n'
+    exit 1
+fi
+
+printf '\033[1;34m[pre-push]\033[0m cargo clippy --workspace --all-targets -- -D warnings\n'
+if ! cargo clippy --workspace --all-targets -- -D warnings; then
+    printf '\n\033[1;31m[pre-push] clippy failed.\033[0m\n'
+    printf 'Bypass: git push --no-verify (or SKIP_HOOKS=1).\n'
+    exit 1
+fi
+
+if ! docker info >/dev/null 2>&1; then
+    cat <<'EOF'
+[pre-push] Docker is not running.
+
+The full test suite spins testcontainer-managed Postgres / Redis / NATS
+instances and needs the Docker daemon. Start Docker Desktop (or your
+daemon of choice), then push again.
+
+Bypass (only if you have already run the integration tests another way):
+    git push --no-verify
+or:
+    SKIP_HOOKS=1 git push
+EOF
+    exit 1
+fi
+
+printf '\033[1;34m[pre-push]\033[0m cargo test --workspace --no-fail-fast\n'
+if ! cargo test --workspace --no-fail-fast; then
+    printf '\n\033[1;31m[pre-push] tests failed.\033[0m\n'
+    printf 'Bypass: git push --no-verify (or SKIP_HOOKS=1).\n'
+    exit 1
+fi
+
+exit 0

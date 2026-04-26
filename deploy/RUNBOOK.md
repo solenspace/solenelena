@@ -19,12 +19,33 @@ Postgres / Redis / NATS plugins from Railway's catalog.
 
 ## Deployment
 
-```sh
-# Push to main → Railway auto-deploys via Dockerfile.all-in-one.
-git push origin main
+Production deploys are gated through GitHub Actions — Railway's
+built-in GitHub auto-deploy is intentionally turned off so CI is the
+only path to production.
 
-# Manual redeploy (if auto-deploy is disconnected):
-railway up --service elena-server --environment production --ci
+```sh
+git push origin main
+# → .github/workflows/ci.yml runs fmt + clippy + test + docker-build
+# → on green, the deploy job runs `railway redeploy`
+# → Railway pulls origin/main and rebuilds via Dockerfile.all-in-one
+```
+
+Manual redeploy (last resort — e.g. CI is broken and you have the
+operator role):
+
+```sh
+railway redeploy --service elena-server --environment production -y
+```
+
+Rollback:
+
+```sh
+# Instant — Railway keeps the prior image hot.
+railway rollback --service elena-server
+
+# Or revert the offending commit and push; CI re-runs and deploys
+# the prior SHA via the same `railway redeploy` path.
+git revert <bad-sha> && git push origin main
 ```
 
 The image is built from `deploy/docker/Dockerfile.all-in-one` per
@@ -66,3 +87,46 @@ Helm chart and per-service Dockerfiles were removed; if you migrate off
 Railway, plan to split `elena-server` back into per-process bins
 (`gateway`, `worker`) or wrap the all-in-one image with separate
 deployments that pin different `ELENA_WORKER__*` envs.
+
+## One-time pipeline setup (operator)
+
+Required after merging the CI/CD bootstrap PR. These steps are
+repo-external and cannot be expressed as code.
+
+1. **Disable Railway's GitHub auto-deploy.**
+   Railway dashboard → `elena-server` service → Settings → Source →
+   toggle **Auto Deploy from GitHub** to OFF. Keep the GitHub repo
+   source connected; `railway redeploy` still relies on it to fetch
+   `origin/main`.
+
+2. **Provision `RAILWAY_TOKEN`.**
+   ```sh
+   railway login
+   railway tokens create --name github-actions --project <project-id>
+   ```
+   Paste the token into GitHub repo Settings → Secrets and variables →
+   Actions → New repository secret named `RAILWAY_TOKEN`. Project-scoped
+   tokens are preferred over account-scoped (`RAILWAY_API_TOKEN`).
+
+3. **(Recommended) Create the `production` GitHub Environment.**
+   Settings → Environments → New environment → name `production`. Add
+   required reviewers if you want a human gate before deploys land.
+   The `deploy` job in `ci.yml` already references this environment, so
+   the `RAILWAY_TOKEN` secret can be scoped to it (not exposed to
+   pull-request runs).
+
+4. **(Recommended) Branch-protection rules.**
+   Settings → Branches → Add rule for `main`:
+   - Require status checks to pass: `cargo fmt`, `cargo clippy`,
+     `cargo test`, `docker build (Dockerfile.all-in-one)`,
+     `conventional-commit lint`.
+   - Require pull-request reviews before merging.
+   - Require linear history (matches the team's squash-merge
+     convention).
+
+5. **Verify.**
+   - Open a draft PR introducing a clippy violation → `clippy` job red.
+   - Open a PR titled `chore add stuff` → `pr-title` job red.
+   - Merge a green PR to `main` → `deploy` job appears in the workflow
+     graph and reports `railway redeploy` success;
+     `curl https://<railway-domain>/info` returns the new git SHA.

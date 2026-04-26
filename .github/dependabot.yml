@@ -1,0 +1,45 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "12:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "rust"]
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+    groups:
+      cargo-patch-and-minor:
+        patterns: ["*"]
+        update-types: [patch, minor]
+    # Major bumps for these load-bearing crates need a design pass, not a
+    # Dependabot PR. Patch / minor updates still flow through the group above.
+    ignore:
+      - dependency-name: "tonic"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tonic-build"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "sqlx"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "axum"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "12:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: "ci(deps)"
+      include: scope
+    groups:
+      gha-all:
+        patterns: ["*"]

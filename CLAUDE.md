@@ -187,6 +187,32 @@ Unit tests are colocated; integration tests live in `crates/*/tests/`.
 The expensive ones (Postgres + Redis + NATS via `testcontainers`)
 require Docker. Smoke binaries live under `bins/elena-*-smoke`.
 
+### Local hooks
+
+One-time setup after clone:
+
+```sh
+bash scripts/install-hooks.sh
+```
+
+This sets `git config core.hooksPath .githooks` and installs three
+hooks that mirror the canonical commands above:
+
+- **pre-commit** — `cargo fmt --check` + `cargo clippy -D warnings`
+  (skipped automatically when no Rust files are staged).
+- **commit-msg** — conventional-commit subject validation
+  (`<type>(<scope>)?(!)?: <subject>`; allowed types: `feat`, `fix`,
+  `chore`, `docs`, `style`, `refactor`, `test`, `perf`, `build`,
+  `ci`, `revert`).
+- **pre-push** — fmt + clippy + `cargo test --workspace`. The full
+  test suite needs the Docker daemon for testcontainer-managed
+  Postgres / Redis / NATS; the hook fails fast with a clear message
+  when Docker is down.
+
+Bypass for emergencies: `git commit --no-verify` (universal) or
+`SKIP_HOOKS=1 git push` (for non-interactive scripts). CI re-runs
+every check, so bypassing locally only delays the failure to GitHub.
+
 ### Smoke binaries
 
 ```sh
@@ -398,6 +424,52 @@ crate that references them carries a `#![allow(deprecated)]` tagged
 6. Remove every `#![allow(deprecated)]` tagged `B1.6` (15+ files).
 
 The `#[deprecated]` annotations document the migration target inline.
+
+---
+
+## CI/CD pipeline
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+```
+fmt | clippy | test | docker-build      (parallel)
+                  └─ deploy              (push to main only, after all four pass)
+```
+
+- **fmt** — `cargo fmt --all -- --check`
+- **clippy** — `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- **test** — `cargo test --workspace --no-fail-fast --locked`
+  (ubuntu-latest ships Docker; testcontainer-based integration tests
+  Just Work)
+- **docker-build** — buildx-builds `deploy/docker/Dockerfile.all-in-one`
+  with GHA cache. Validates the production image per-PR without pushing
+- **deploy** (main only) — installs the Railway CLI and runs
+  `railway redeploy --service elena-server -y` using the
+  `RAILWAY_TOKEN` repo secret. Scoped to the `production`
+  GitHub Environment (required-reviewer-friendly)
+
+`.github/workflows/pr-title.yml` lints PR titles against the same
+conventional-commit type list as the local `commit-msg` hook —
+required because squash-merges replace individual commits with the
+PR title.
+
+`.github/workflows/audit.yml` runs `cargo audit` (RUSTSEC advisories)
+and `cargo deny check` (`deny.toml`) every Monday and on `Cargo.lock`
+changes. Advisory: surfaces in the Actions tab but does not gate PRs.
+
+`.github/dependabot.yml` opens grouped weekly PRs for cargo + GitHub
+Actions updates. Major bumps of `tonic` / `sqlx` / `axum` are pinned
+out (those need a design pass, not a Dependabot PR).
+
+Railway's dashboard auto-deploy is **off** — GitHub Actions is the
+only path to production. See `deploy/RUNBOOK.md` for the one-time
+operator setup (disabling Railway auto-deploy, provisioning
+`RAILWAY_TOKEN`).
+
+Toolchain pin: `rust-toolchain.toml` channel `1.90`. CI inherits this
+via `actions-rust-lang/setup-rust-toolchain`. The Dockerfile builder
+also uses `rust:1.90-bookworm`, so dev / CI / prod compile against
+the same compiler.
 
 ---
 
