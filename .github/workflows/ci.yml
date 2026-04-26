@@ -89,13 +89,15 @@ jobs:
         run: npm install -g @railway/cli@latest
       - name: Deploy to Railway
         env:
-          # Account-scoped token; pinpoints the deploy via explicit
-          # --project / --service / --environment so the token does not
-          # need to carry project scope itself.
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          # Account / workspace token. Critical: only set
+          # RAILWAY_API_TOKEN — if RAILWAY_TOKEN is also set, the Railway
+          # CLI validates it first as a *project* token, fails with
+          # "Invalid RAILWAY_TOKEN", and never falls back. The explicit
+          # --project / --service / --environment flags target the deploy.
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
         run: |
-          if [ -z "${RAILWAY_TOKEN}" ]; then
-            echo "::error::RAILWAY_TOKEN is not set. Provision it under Settings → Environments → production." >&2
+          if [ -z "${RAILWAY_API_TOKEN}" ]; then
+            echo "::error::RAILWAY_API_TOKEN is not set on the production environment. Generate a token at https://railway.com/account/tokens and add it under Settings → Environments → production." >&2
             exit 1
           fi
           railway --version
