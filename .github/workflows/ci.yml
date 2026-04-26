@@ -90,17 +90,19 @@ jobs:
       - name: Deploy to Railway
         env:
           # The Railway CLI reads project tokens from RAILWAY_TOKEN and
-          # account tokens from RAILWAY_API_TOKEN. We surface the secret
-          # under both so either token type works; the explicit --project
-          # / --service / --environment flags pin the deploy target
-          # regardless of token scope.
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          # account tokens from RAILWAY_API_TOKEN. Accept either secret
+          # name (operators have stored it under both at various points)
+          # and surface it under both env-var names so the CLI picks
+          # whichever it expects. The explicit --project / --service /
+          # --environment flags pin the deploy target regardless.
+          TOKEN: ${{ secrets.RAILWAY_API_TOKEN || secrets.RAILWAY_TOKEN }}
         run: |
-          if [ -z "${RAILWAY_TOKEN}${RAILWAY_API_TOKEN}" ]; then
-            echo "::error::RAILWAY_TOKEN is not set. Provision it under Settings → Environments → production." >&2
+          if [ -z "${TOKEN}" ]; then
+            echo "::error::No Railway token in production env. Add RAILWAY_API_TOKEN (account-scoped) or RAILWAY_TOKEN (project-scoped) under Settings → Environments → production." >&2
             exit 1
           fi
+          export RAILWAY_TOKEN="$TOKEN"
+          export RAILWAY_API_TOKEN="$TOKEN"
           railway --version
           railway up --detach \
             --project 50b379da-82af-42a5-b88f-fc76a2c3dfc2 \
