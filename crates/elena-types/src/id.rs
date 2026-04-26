@@ -183,6 +183,16 @@ define_id! {
     PlanAssignmentId, "PlanAssignmentId"
 }
 
+define_id! {
+    /// Identifies a registered app — the admin grouping above tenants.
+    ///
+    /// Apps are an admin-only concept: Elena's runtime stays tenant-scoped,
+    /// but the admin panel uses [`AppId`] to manage Solen, Hannlys, Omnii,
+    /// etc. as distinct products. Tenants belong to at most one app via
+    /// `tenants.app_id`; app metadata is opaque to the engine.
+    AppId, "AppId"
+}
+
 /// Identifies a plugin connector by its user-supplied namespace.
 ///
 /// Unlike the other IDs, this is a [`String`] — plugin IDs are author-chosen

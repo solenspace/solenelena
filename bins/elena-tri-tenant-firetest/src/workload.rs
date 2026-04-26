@@ -257,10 +257,7 @@ async fn solen_loop(
             return;
         }
     };
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .expect("client");
+    let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().expect("client");
 
     while Instant::now() < deadline {
         let thread_id = match create_thread(&http, &base, &token).await {
@@ -273,10 +270,7 @@ async fn solen_loop(
             }
         };
         // Two turns per thread: one tool-use yolo, one text-only follow-up.
-        for prompt in [
-            "Reverse the word firetest.",
-            "Acknowledge with a one-line status.",
-        ] {
+        for prompt in ["Reverse the word firetest.", "Acknowledge with a one-line status."] {
             let start = Instant::now();
             counters.started.fetch_add(1, Ordering::Relaxed);
             match run_one_turn(&ws_base, &token, thread_id, prompt, "yolo").await {
@@ -308,10 +302,7 @@ async fn hannlys_loop(
     // Each loop spawns its own buyer workspace + user — exercises the
     // marketplace pattern where every "purchase" creates a buyer-side
     // workspace. The tenant row is pre-created in provisioning.
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .expect("client");
+    let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().expect("client");
     let workspace = WorkspaceId::new();
     let user = UserId::new();
     if let Err(e) = create_workspace(
@@ -390,10 +381,7 @@ async fn omnii_loop(
             return;
         }
     };
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(45))
-        .build()
-        .expect("client");
+    let http = reqwest::Client::builder().timeout(Duration::from_secs(45)).build().expect("client");
 
     while Instant::now() < deadline {
         let thread_id = match create_thread(&http, &base, &token).await {
@@ -540,9 +528,7 @@ async fn run_one_turn(
     use tokio_tungstenite::tungstenite::http::Request;
 
     let url = format!("{ws_base}/v1/threads/{thread_id}/stream");
-    let host = url
-        .strip_prefix("ws://")
-        .map_or("", |s| s.split('/').next().unwrap_or(""));
+    let host = url.strip_prefix("ws://").map_or("", |s| s.split('/').next().unwrap_or(""));
     let req = Request::builder()
         .method("GET")
         .uri(&url)
@@ -567,11 +553,10 @@ async fn run_one_turn(
     let mut got_done = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     while !got_done {
-        let next =
-            match tokio::time::timeout_at(deadline, socket.next()).await {
-                Ok(o) => o,
-                Err(_) => anyhow::bail!("turn timed out"),
-            };
+        let next = match tokio::time::timeout_at(deadline, socket.next()).await {
+            Ok(o) => o,
+            Err(_) => anyhow::bail!("turn timed out"),
+        };
         let Some(msg) = next else { break };
         let msg = msg?;
         if let WsMessage::Text(t) = msg {
@@ -595,11 +580,7 @@ fn inner_event(v: &serde_json::Value) -> &serde_json::Value {
     }
 }
 
-fn mint_token(
-    tenant: TenantId,
-    user: UserId,
-    workspace: WorkspaceId,
-) -> Result<String> {
+fn mint_token(tenant: TenantId, user: UserId, workspace: WorkspaceId) -> Result<String> {
     #[derive(Serialize)]
     struct Claims {
         tenant_id: TenantId,
@@ -728,10 +709,8 @@ pub async fn cleanup_and_verify(
     ];
     for (table, col) in probes {
         let sql = format!("SELECT COUNT(*)::bigint FROM {table} WHERE {col} = ANY($1)");
-        let row: Result<(i64,), _> = sqlx::query_as(&sql)
-            .bind(&ids)
-            .fetch_one(env.store.threads.pool_for_test())
-            .await;
+        let row: Result<(i64,), _> =
+            sqlx::query_as(&sql).bind(&ids).fetch_one(env.store.threads.pool_for_test()).await;
         match row {
             Ok((0,)) => {}
             Ok((n,)) => leak_summary.push(format!("{table}={n}")),

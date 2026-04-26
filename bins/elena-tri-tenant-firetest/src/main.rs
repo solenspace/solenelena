@@ -99,13 +99,14 @@ async fn main() -> ExitCode {
             if let Err(e) = report::write_markdown(&args.report_path, &report) {
                 eprintln!("firetest: report write failed: {e:#}");
             }
-            println!("\nfiretest: {} ({} passed, {} failed)", if pass { "PASS" } else { "FAIL" }, report.summary.passed, report.summary.failed);
+            println!(
+                "\nfiretest: {} ({} passed, {} failed)",
+                if pass { "PASS" } else { "FAIL" },
+                report.summary.passed,
+                report.summary.failed
+            );
             println!("report: {}", args.report_path);
-            if pass {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            }
+            if pass { ExitCode::SUCCESS } else { ExitCode::FAILURE }
         }
         Err(e) => {
             eprintln!("\nfiretest: bring-up FAIL — {e:#}");

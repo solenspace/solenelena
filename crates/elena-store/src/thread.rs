@@ -6,14 +6,54 @@
 //! owner and the requested tenant surfaces as
 //! [`StoreError::TenantMismatch`].
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use elena_types::{
     ContentBlock, Message, MessageId, MessageKind, Role, StoreError, TenantId, ThreadId, UserId,
     WorkspaceId,
 };
+use serde_json::Value;
 use sqlx::{PgPool, QueryBuilder, Row, postgres::PgRow};
+use tracing::instrument;
 
 use crate::sql_error::{classify_serde, classify_sqlx};
+
+/// One thread row, surfaced to the admin API.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreadRecord {
+    /// Thread identifier.
+    pub id: ThreadId,
+    /// Owning tenant.
+    pub tenant_id: TenantId,
+    /// User this thread belongs to.
+    pub user_id: UserId,
+    /// Workspace the thread runs under.
+    pub workspace_id: WorkspaceId,
+    /// Optional human-readable title.
+    pub title: Option<String>,
+    /// Opaque per-thread metadata (caller-defined).
+    pub metadata: HashMap<String, Value>,
+    /// Row creation time.
+    pub created_at: DateTime<Utc>,
+    /// Last update (bumped by `threads_updated_at`).
+    pub updated_at: DateTime<Utc>,
+    /// Latest message timestamp; `None` for empty threads.
+    pub last_message_at: Option<DateTime<Utc>>,
+}
+
+/// Filter passed to [`ThreadStore::list_threads`].
+#[derive(Debug, Clone, Default)]
+pub struct ThreadListFilter {
+    /// Restrict to a single workspace.
+    pub workspace_id: Option<WorkspaceId>,
+    /// Keyset cursor — return threads with `last_message_at < before`.
+    /// Threads whose `last_message_at` is NULL are ordered last and are
+    /// excluded once a cursor is set.
+    pub before: Option<DateTime<Utc>>,
+    /// Page size.
+    pub limit: u32,
+}
 
 /// X3 — Lightweight per-message metadata projection. Skips
 /// `content` and `kind`-payload deserialization, so callers that only
@@ -58,6 +98,69 @@ impl ThreadStore {
     #[must_use]
     pub fn pool_for_test(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// List threads for a tenant, newest-first by `last_message_at`.
+    ///
+    /// Threads with no messages yet (`last_message_at IS NULL`) are surfaced
+    /// at the tail of the first page only — once `filter.before` is set the
+    /// keyset query strictly orders by `last_message_at` and excludes them.
+    #[instrument(skip(self, filter), fields(tenant_id = %tenant_id, limit = filter.limit))]
+    pub async fn list_threads(
+        &self,
+        tenant_id: TenantId,
+        filter: &ThreadListFilter,
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        let mut qb = QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT id, tenant_id, user_id, workspace_id, title, metadata,
+                    created_at, updated_at, last_message_at
+             FROM threads WHERE tenant_id = ",
+        );
+        qb.push_bind(tenant_id.as_uuid());
+
+        if let Some(workspace_id) = filter.workspace_id {
+            qb.push(" AND workspace_id = ").push_bind(workspace_id.as_uuid());
+        }
+        if let Some(before) = filter.before {
+            qb.push(" AND last_message_at IS NOT NULL AND last_message_at < ").push_bind(before);
+        }
+
+        qb.push(" ORDER BY last_message_at DESC NULLS LAST, id DESC LIMIT ")
+            .push_bind(i64::from(filter.limit));
+
+        let rows = qb.build().fetch_all(&self.pool).await.map_err(classify_sqlx)?;
+        rows.iter().map(decode_thread).collect()
+    }
+
+    /// Fetch a single thread, scoped to its owning tenant.
+    ///
+    /// Returns `Ok(None)` if no row exists; returns
+    /// [`StoreError::TenantMismatch`] on cross-tenant access.
+    #[instrument(skip(self))]
+    pub async fn get_thread(
+        &self,
+        tenant_id: TenantId,
+        thread_id: ThreadId,
+    ) -> Result<Option<ThreadRecord>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, user_id, workspace_id, title, metadata,
+                    created_at, updated_at, last_message_at
+             FROM threads WHERE id = $1",
+        )
+        .bind(thread_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(classify_sqlx)?;
+
+        let Some(row) = row else { return Ok(None) };
+
+        let owner_uuid: uuid::Uuid = row.try_get("tenant_id").map_err(classify_sqlx)?;
+        let owner = TenantId::from_uuid(owner_uuid);
+        if owner != tenant_id {
+            return Err(StoreError::TenantMismatch { owner, requested: tenant_id });
+        }
+
+        Ok(Some(decode_thread(&row)?))
     }
 
     /// Create a new thread for a tenant/user/workspace triple.
@@ -410,6 +513,31 @@ fn role_from_str(s: &str) -> Result<Role, StoreError> {
         "tool" => Ok(Role::Tool),
         other => Err(StoreError::Serialization(format!("unknown role: {other}"))),
     }
+}
+
+fn decode_thread(row: &PgRow) -> Result<ThreadRecord, StoreError> {
+    let id: uuid::Uuid = row.try_get("id").map_err(classify_sqlx)?;
+    let tenant_id: uuid::Uuid = row.try_get("tenant_id").map_err(classify_sqlx)?;
+    let user_id: uuid::Uuid = row.try_get("user_id").map_err(classify_sqlx)?;
+    let workspace_id: uuid::Uuid = row.try_get("workspace_id").map_err(classify_sqlx)?;
+    let title: Option<String> = row.try_get("title").map_err(classify_sqlx)?;
+    let metadata: Value = row.try_get("metadata").map_err(classify_sqlx)?;
+    let created_at: DateTime<Utc> = row.try_get("created_at").map_err(classify_sqlx)?;
+    let updated_at: DateTime<Utc> = row.try_get("updated_at").map_err(classify_sqlx)?;
+    let last_message_at: Option<DateTime<Utc>> =
+        row.try_get("last_message_at").map_err(classify_sqlx)?;
+
+    Ok(ThreadRecord {
+        id: ThreadId::from_uuid(id),
+        tenant_id: TenantId::from_uuid(tenant_id),
+        user_id: UserId::from_uuid(user_id),
+        workspace_id: WorkspaceId::from_uuid(workspace_id),
+        title,
+        metadata: serde_json::from_value(metadata).map_err(|e| classify_serde(&e))?,
+        created_at,
+        updated_at,
+        last_message_at,
+    })
 }
 
 fn row_to_message(row: &PgRow) -> Result<Message, StoreError> {

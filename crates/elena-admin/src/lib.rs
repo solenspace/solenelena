@@ -32,7 +32,10 @@
 )]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod apps;
+pub mod audit;
 pub mod auth;
+pub mod budget;
 pub mod health;
 pub mod plan_assignments;
 pub mod plans;
@@ -41,6 +44,7 @@ pub mod router;
 pub mod state;
 pub mod tenant_credentials;
 pub mod tenants;
+pub mod threads;
 pub mod workspaces;
 
 pub use router::admin_router;

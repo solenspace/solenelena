@@ -41,8 +41,7 @@ impl pb::elena_plugin_server::ElenaPlugin for VideoMockConnector {
         }))
     }
 
-    type ExecuteStream =
-        tokio_stream::wrappers::ReceiverStream<Result<pb::PluginResponse, Status>>;
+    type ExecuteStream = tokio_stream::wrappers::ReceiverStream<Result<pb::PluginResponse, Status>>;
 
     async fn execute(
         &self,
@@ -57,11 +56,8 @@ impl pb::elena_plugin_server::ElenaPlugin for VideoMockConnector {
         }
         let body: serde_json::Value = serde_json::from_slice(&inner.input_json)
             .map_err(|e| Status::invalid_argument(format!("input not JSON: {e}")))?;
-        let brief = body
-            .get("brief")
-            .and_then(|v| v.as_str())
-            .unwrap_or("(empty brief)")
-            .to_owned();
+        let brief =
+            body.get("brief").and_then(|v| v.as_str()).unwrap_or("(empty brief)").to_owned();
 
         // Deterministic but spread out: 200..=800 ms based on brief
         // length. Avoids flaky races but still shows concurrency.

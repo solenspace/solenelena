@@ -159,7 +159,9 @@ pub fn build_router(state: GatewayState) -> Router {
 
     let core = Router::new()
         .route("/health", get(health::health))
+        .route("/ready", get(health::ready))
         .route("/version", get(health::version))
+        .route("/info", get(health::info))
         .route("/metrics", get(metrics::metrics))
         .route("/v1/threads", post(threads::create_thread))
         .route("/v1/threads/{thread_id}/stream", get(ws::ws_upgrade))

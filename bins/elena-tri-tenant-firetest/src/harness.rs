@@ -151,29 +151,19 @@ impl Harness {
                 model: model.clone(),
                 max_output_tokens: None,
             },
-            premium: TierEntry {
-                provider: "anthropic".into(),
-                model,
-                max_output_tokens: None,
-            },
+            premium: TierEntry { provider: "anthropic".into(), model, max_output_tokens: None },
         };
 
         // ---- Plugins (embedded only — echo + video_mock) ----
         let tools = ToolRegistry::new();
         let plugins_cfg = PluginsConfig::default();
         let plugins = Arc::new(PluginRegistry::with_config(tools.clone(), &plugins_cfg));
-        plugins
-            .register_embedded(Arc::new(Arc::new(elena_connector_echo::EchoConnector)))
-            .await?;
-        plugins
-            .register_embedded(Arc::new(Arc::new(VideoMockConnector)))
-            .await?;
+        plugins.register_embedded(Arc::new(Arc::new(elena_connector_echo::EchoConnector))).await?;
+        plugins.register_embedded(Arc::new(Arc::new(VideoMockConnector))).await?;
 
         // ---- LoopDeps ----
-        let context = Arc::new(ContextManager::new(
-            Arc::new(NullEmbedder),
-            ContextManagerOptions::default(),
-        ));
+        let context =
+            Arc::new(ContextManager::new(Arc::new(NullEmbedder), ContextManagerOptions::default()));
         let memory = Arc::new(EpisodicMemory::new(Arc::new(store.episodes.clone())));
         let router = Arc::new(ModelRouter::new(tier_routing, 1));
         let metrics = Arc::new(elena_observability::LoopMetrics::new()?);

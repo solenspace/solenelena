@@ -54,11 +54,8 @@ async fn check_audit_drops_zero(env: &Harness) -> CheckResult {
         .lines()
         .find(|l| l.starts_with("elena_audit_drops_total "))
         .unwrap_or("elena_audit_drops_total ?");
-    let count: u64 = line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(u64::MAX);
+    let count: u64 =
+        line.split_whitespace().nth(1).and_then(|n| n.parse().ok()).unwrap_or(u64::MAX);
     if count == 0 {
         CheckResult::pass("audit_drops_zero", line.to_string())
     } else {
@@ -78,23 +75,20 @@ async fn check_per_tenant_audit_isolation(env: &Harness, p: &Provisioned) -> Che
         ("hannlys-buyer", p.hannlys.buyer_tenant_id),
         ("omnii", p.omnii.tenant_id),
     ] {
-        let row: Option<(uuid::Uuid,)> = match sqlx::query_as(
-            "SELECT tenant_id FROM audit_events WHERE tenant_id = $1 LIMIT 1",
-        )
-        .bind(tenant.as_uuid())
-        .fetch_optional(env.store.threads.pool_for_test())
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => return CheckResult::fail("audit_isolation", format!("{label}: {e}")),
-        };
+        let row: Option<(uuid::Uuid,)> =
+            match sqlx::query_as("SELECT tenant_id FROM audit_events WHERE tenant_id = $1 LIMIT 1")
+                .bind(tenant.as_uuid())
+                .fetch_optional(env.store.threads.pool_for_test())
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => return CheckResult::fail("audit_isolation", format!("{label}: {e}")),
+            };
         if let Some((rid,)) = row {
             if rid != tenant.as_uuid() {
                 return CheckResult::fail(
                     "audit_isolation",
-                    format!(
-                        "{label}: tenant filter returned a row for {rid}, expected {tenant}"
-                    ),
+                    format!("{label}: tenant filter returned a row for {rid}, expected {tenant}"),
                 );
             }
         }
@@ -127,7 +121,9 @@ async fn check_no_cross_tenant_messages(env: &Harness, p: &Provisioned) -> Check
             } else {
                 CheckResult::fail(
                     "no_cross_tenant_messages",
-                    format!("{leak} messages have a tenant_id that does not match their thread's tenant_id — TENANT LEAK"),
+                    format!(
+                        "{leak} messages have a tenant_id that does not match their thread's tenant_id — TENANT LEAK"
+                    ),
                 )
             }
         }
