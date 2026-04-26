@@ -87,6 +87,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Railway CLI
         run: npm install -g @railway/cli@latest
+      - name: Inject git SHA for /info endpoint
+        # Dockerfile.all-in-one COPYs .git-sha and exports it as
+        # VERGEN_GIT_SHA at cargo build time. Without this step the
+        # deployed binary reports "unknown" — the committed default.
+        run: echo "${{ github.sha }}" > .git-sha
       - name: Deploy to Railway
         env:
           # Account / workspace token. Critical: only set
