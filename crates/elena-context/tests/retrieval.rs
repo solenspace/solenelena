@@ -25,9 +25,30 @@ use elena_types::{
     BudgetLimits, Message, PermissionSet, TenantId, TenantTier, UserId, WorkspaceId,
 };
 use secrecy::SecretString;
-use testcontainers::{GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner};
+use testcontainers::{ContainerAsync, GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner};
 
-async fn harness() -> (Arc<Store>, TenantId, elena_types::ThreadId) {
+struct Harness {
+    pg: ContainerAsync<GenericImage>,
+    redis: ContainerAsync<GenericImage>,
+    store: Arc<Store>,
+    tenant_id: TenantId,
+    thread_id: elena_types::ThreadId,
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        // Synchronous best-effort cleanup. The testcontainers crate's Drop
+        // spawns an async task that often does not complete before the
+        // test process exits, leaking containers across runs.
+        let _ = std::process::Command::new("docker")
+            .args(["rm", "-f"])
+            .arg(self.pg.id())
+            .arg(self.redis.id())
+            .output();
+    }
+}
+
+async fn harness() -> Harness {
     let pg = GenericImage::new("pgvector/pgvector", "pg16")
         .with_wait_for(WaitFor::message_on_stderr("database system is ready to accept connections"))
         .with_env_var("POSTGRES_PASSWORD", "elena")
@@ -36,9 +57,7 @@ async fn harness() -> (Arc<Store>, TenantId, elena_types::ThreadId) {
         .start()
         .await
         .expect("pg");
-    // Hold the container in a leaked Box so the test runtime keeps it alive.
     let pg_port = pg.get_host_port_ipv4(5432).await.expect("pg port");
-    Box::leak(Box::new(pg));
 
     let redis = GenericImage::new("redis", "7-alpine")
         .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
@@ -46,7 +65,6 @@ async fn harness() -> (Arc<Store>, TenantId, elena_types::ThreadId) {
         .await
         .expect("redis");
     let redis_port = redis.get_host_port_ipv4(6379).await.expect("redis port");
-    Box::leak(Box::new(redis));
 
     let cfg = ElenaConfig {
         postgres: PostgresConfig {
@@ -96,12 +114,15 @@ async fn harness() -> (Arc<Store>, TenantId, elena_types::ThreadId) {
         .create_thread(tenant_id, UserId::new(), WorkspaceId::new(), Some("retrieval"))
         .await
         .expect("create thread");
-    (Arc::new(store), tenant_id, thread_id)
+    Harness { pg, redis, store: Arc::new(store), tenant_id, thread_id }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn embed_and_store_enables_similarity_retrieval() {
-    let (store, tenant_id, thread_id) = harness().await;
+    let h = harness().await;
+    let store = h.store.clone();
+    let tenant_id = h.tenant_id;
+    let thread_id = h.thread_id;
     let cm = ContextManager::new(
         Arc::new(FakeEmbedder) as Arc<dyn Embedder>,
         ContextManagerOptions::default(),
@@ -132,7 +153,10 @@ async fn embed_and_store_enables_similarity_retrieval() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn build_context_without_embedder_returns_recency_window() {
-    let (store, tenant_id, thread_id) = harness().await;
+    let h = harness().await;
+    let store = h.store.clone();
+    let tenant_id = h.tenant_id;
+    let thread_id = h.thread_id;
     let cm = ContextManager::new(
         Arc::new(NullEmbedder) as Arc<dyn Embedder>,
         ContextManagerOptions {
@@ -165,7 +189,10 @@ async fn build_context_without_embedder_returns_recency_window() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn build_context_with_embedder_returns_union_of_recent_and_similar() {
-    let (store, tenant_id, thread_id) = harness().await;
+    let h = harness().await;
+    let store = h.store.clone();
+    let tenant_id = h.tenant_id;
+    let thread_id = h.thread_id;
     let cm = ContextManager::new(
         Arc::new(FakeEmbedder) as Arc<dyn Embedder>,
         ContextManagerOptions {
