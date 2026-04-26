@@ -132,7 +132,7 @@ impl AppStore {
     /// pre-check the app would silently disappear from existing tenants.
     #[instrument(skip(self))]
     pub async fn delete(&self, id: AppId) -> Result<(), StoreError> {
-        let in_use: Option<i64> = sqlx::query_scalar(
+        let in_use: Option<i32> = sqlx::query_scalar(
             "SELECT 1 FROM tenants
              WHERE app_id = $1 AND deleted_at IS NULL
              LIMIT 1",
