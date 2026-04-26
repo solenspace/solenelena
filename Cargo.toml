@@ -25,6 +25,7 @@ members = [
     "bins/elena-hannlys-smoke",
     "bins/elena-server",
     "bins/elena-solen-smoke",
+    "bins/elena-tri-tenant-firetest",
 ]
 
 [workspace.package]

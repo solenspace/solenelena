@@ -187,9 +187,6 @@ impl TenantStore {
             qb.push(" AND app_id = ").push_bind(app_id.as_uuid());
         }
         if let Some(ref prefix) = filter.name_prefix {
-            // ILIKE with a literal prefix — the `%` is appended on the bind
-            // side so any wildcards inside the prefix are escaped by the
-            // driver, not interpreted.
             qb.push(" AND name ILIKE ").push_bind(format!("{prefix}%"));
         }
 
@@ -204,11 +201,9 @@ impl TenantStore {
 
     /// Soft-delete a tenant. Sets `deleted_at = now()` so future
     /// reads (`get_tenant`, `update_allowed_plugins`, `list_all` without
-    /// `include_deleted`) treat it as nonexistent.
-    ///
-    /// Idempotent in the no-op direction: re-soft-deleting an already
-    /// soft-deleted tenant returns `StoreError::TenantNotFound` so admins
-    /// don't accidentally bump the timestamp.
+    /// `include_deleted`) treat it as nonexistent. Audit history is
+    /// preserved — the row stays in `tenants` so its `audit_events`
+    /// children remain valid.
     #[instrument(skip(self))]
     pub async fn soft_delete(&self, id: TenantId) -> Result<(), StoreError> {
         let rows = sqlx::query(
@@ -243,6 +238,25 @@ impl TenantStore {
             return Err(StoreError::TenantNotFound(id));
         }
         Ok(())
+    }
+
+    /// Hard-delete a tenant and every row scoped to it. Cascades through
+    /// the FK graph (`threads` → `messages`, `workspaces`, `audit_events`,
+    /// `episodes`, `plans`, `plan_assignments`, `plugin_ownerships`,
+    /// `tenant_credentials`, `budget_state`). Use [`Self::soft_delete`]
+    /// for production tenant offboarding so the audit trail survives;
+    /// `delete_tenant` is for cleanup paths like the tri-tenant
+    /// fire-test where every dependent row is genuinely garbage.
+    ///
+    /// Returns `true` when a row was actually deleted, `false` when no
+    /// tenant existed (handler maps both to 204 idempotency).
+    pub async fn delete_tenant(&self, id: TenantId) -> Result<bool, StoreError> {
+        let rows = sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(id.as_uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(classify_sqlx)?;
+        Ok(rows.rows_affected() > 0)
     }
 
     /// Replace the per-tenant admin-scope hash. Pass `None` to clear

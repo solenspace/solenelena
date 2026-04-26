@@ -11,8 +11,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
-use chrono::DateTime;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use elena_store::{TenantListFilter, TenantRecord};
 use elena_types::{
     AppId, BudgetLimits, PermissionSet, Plan, PlanId, PlanSlug, TenantId, TenantTier,
@@ -153,9 +152,6 @@ pub async fn create_tenant(
             updated_at: now,
         };
         if let Err(e) = state.store.plans.upsert(&plan).await {
-            // Tenant exists; default plan failed to seed. Surface a 500
-            // so admin tooling notices and either retries or seeds a
-            // plan via POST /plans manually.
             tracing::error!(?e, tenant_id = %record.id, "default plan seed failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -170,6 +166,28 @@ pub async fn create_tenant(
         Json(TenantResponse { id: record.id, name: record.name, tier: record.tier }),
     )
         .into_response()
+}
+
+/// `DELETE /admin/v1/tenants/:id` — hard-delete the tenant and every
+/// row scoped to it. Cascades via Postgres `ON DELETE CASCADE`. For
+/// production tenant offboarding that needs to keep audit history,
+/// call [`soft_delete_tenant`] instead — that route sets `deleted_at`
+/// without losing the audit trail.
+pub async fn delete_tenant(
+    State(state): State<AdminState>,
+    Path(id): Path<TenantId>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(s) = require_tenant_scope(&state.store, id, &headers).await {
+        return s.into_response();
+    }
+    match state.store.tenants.delete_tenant(id).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            tracing::error!(?e, %id, "delete_tenant failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
 }
 
 /// `GET /admin/v1/tenants/:id` — fetch a tenant by id.
@@ -382,8 +400,11 @@ pub async fn set_app(
     }
 }
 
-/// `DELETE /admin/v1/tenants/:id` — soft-delete a tenant.
-pub async fn delete_tenant(
+/// `POST /admin/v1/tenants/:id/soft-delete` — mark a tenant as deleted
+/// while keeping the row + dependent `audit_events` intact. Use this
+/// for production offboarding; [`delete_tenant`] is the destructive
+/// hard-cascade variant kept for fire-test cleanup.
+pub async fn soft_delete_tenant(
     State(state): State<AdminState>,
     Path(id): Path<TenantId>,
     headers: HeaderMap,
@@ -397,7 +418,7 @@ pub async fn delete_tenant(
             (StatusCode::NOT_FOUND, format!("tenant {id} not found")).into_response()
         }
         Err(e) => {
-            tracing::error!(?e, %id, "delete_tenant failed");
+            tracing::error!(?e, %id, "soft_delete_tenant failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

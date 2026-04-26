@@ -25,7 +25,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/apps/{id}", get(apps::get_app).patch(apps::update_app).delete(apps::delete_app))
         .route("/apps/{id}/tenants", get(apps::list_app_tenants).post(apps::onboard_tenant))
         .route("/apps/{id}/usage-summary", get(budget::get_usage_summary))
-        // Tenants — existing CRUD plus list / delete / set-app.
+        // Tenants — CRUD + list + cascading delete + soft-delete + set-app.
         .route("/tenants", post(tenants::create_tenant).get(tenants::list_tenants))
         .route("/tenants/{id}", get(tenants::get_tenant).delete(tenants::delete_tenant))
         .route("/tenants/{id}/budget", patch(tenants::update_budget))
@@ -33,6 +33,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/tenants/{id}/allowed-plugins", patch(tenants::update_allowed_plugins))
         .route("/tenants/{id}/admin-scope", put(tenants::set_admin_scope))
         .route("/tenants/{id}/app", patch(tenants::set_app))
+        .route("/tenants/{id}/soft-delete", post(tenants::soft_delete_tenant))
         .route("/tenants/{id}/audit-events", get(audit::list_audit_events))
         .route("/tenants/{id}/threads", get(threads::list_threads))
         .route("/tenants/{id}/credentials", get(tenant_credentials::list_credentials))

@@ -188,6 +188,33 @@ pub async fn update_allowed_plugins(
     }
 }
 
+/// `DELETE /admin/v1/workspaces/:id?tenant_id=<uuid>` — drop the
+/// workspace and every thread inside it (cascading to messages,
+/// approvals, and per-thread usage).
+///
+/// Idempotent: returns `204 No Content` whether the workspace existed
+/// or not, so operator retries are safe. The query-string `tenant_id`
+/// is enforced at the store layer — passing the wrong tenant returns
+/// `204` (no row matches) rather than leaking workspace-existence
+/// across tenants.
+///
+/// Surfaced as a need by the tri-tenant fire-test
+/// (`bins/elena-tri-tenant-firetest`); previously every test run left
+/// orphan workspaces under each tenant.
+pub async fn delete_workspace(
+    State(state): State<AdminState>,
+    Path(id): Path<WorkspaceId>,
+    axum::extract::Query(q): axum::extract::Query<TenantQuery>,
+) -> impl IntoResponse {
+    match state.store.workspaces.delete(q.tenant_id, id).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            tracing::error!(?e, %id, "delete_workspace failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
 /// Query-string tenant gate. Shared by the `:id`-scoped routes.
 #[derive(Debug, Deserialize)]
 pub struct TenantQuery {
@@ -259,24 +286,6 @@ pub async fn list_workspaces(
         }
         Err(e) => {
             tracing::error!(?e, "list_workspaces failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-        }
-    }
-}
-
-/// `DELETE /admin/v1/workspaces/:id?tenant_id=` — delete a workspace.
-pub async fn delete_workspace(
-    State(state): State<AdminState>,
-    Path(id): Path<WorkspaceId>,
-    Query(q): Query<TenantQuery>,
-) -> impl IntoResponse {
-    match state.store.workspaces.delete(q.tenant_id, id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(elena_types::StoreError::Database(msg)) if msg.starts_with("no workspace ") => {
-            (StatusCode::NOT_FOUND, format!("workspace {id} not found")).into_response()
-        }
-        Err(e) => {
-            tracing::error!(?e, "delete_workspace failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
