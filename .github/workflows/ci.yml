@@ -87,8 +87,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Railway CLI
         run: npm install -g @railway/cli@latest
-      - name: Trigger Railway redeploy
+      - name: Deploy to Railway
         env:
+          # Account-scoped token; pinpoints the deploy via explicit
+          # --project / --service / --environment so the token does not
+          # need to carry project scope itself.
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           if [ -z "${RAILWAY_TOKEN}" ]; then
@@ -96,4 +99,7 @@ jobs:
             exit 1
           fi
           railway --version
-          railway redeploy --service elena-server --yes
+          railway up --detach \
+            --project 50b379da-82af-42a5-b88f-fc76a2c3dfc2 \
+            --service 07e3776c-6b83-41c6-a158-661f9c3022c2 \
+            --environment production
