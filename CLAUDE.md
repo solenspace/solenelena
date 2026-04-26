@@ -79,6 +79,100 @@ scripts/
 
 ---
 
+## HTTP surface
+
+The gateway mounts public paths at the root and the admin API under
+`/admin/v1`. Every admin route requires `X-Elena-Admin-Token` (set via
+`ELENA_ADMIN_TOKEN`); routes scoped to a single tenant additionally
+honour the optional per-tenant `X-Elena-Tenant-Scope` header (S2).
+
+### Public
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET    | `/health`  | Liveness probe (always 200) |
+| GET    | `/ready`   | Readiness — Postgres + NATS reachable; 503 on any miss |
+| GET    | `/version` | Crate version |
+| GET    | `/info`    | Version + git SHA (`VERGEN_GIT_SHA` if set, else `"unknown"`); snapshot-tested for secret-leak prevention |
+| GET    | `/metrics` | Prometheus exposition |
+| POST   | `/v1/threads` | Create a thread for the JWT's tenant |
+| GET    | `/v1/threads/{thread_id}/stream` | WebSocket upgrade — turn streaming + `SendMessage`/`Abort` |
+| POST   | `/v1/threads/{thread_id}/approvals` | Submit tool-approval decisions to a paused loop |
+
+### Admin · apps (Solen / Hannlys / Omnii grouping above tenants)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST   | `/admin/v1/apps` | Register an app |
+| GET    | `/admin/v1/apps` | List apps (drives the admin-panel dropdown) |
+| GET    | `/admin/v1/apps/{id}` | Fetch one |
+| PATCH  | `/admin/v1/apps/{id}` | Partial update; `null` clears nullable JSONB fields |
+| DELETE | `/admin/v1/apps/{id}` | Delete; **409 if any live tenant references it** |
+| GET    | `/admin/v1/apps/{id}/tenants` | List tenants under an app (`?include_deleted=true`, `?name=`) |
+| POST   | `/admin/v1/apps/{id}/tenants` | **Atomic onboarding**: create tenant + seed default plan from `default_plan_template` |
+| GET    | `/admin/v1/apps/{id}/usage-summary` | `SUM(messages.token_count)` across the app's tenants; `?since=&until=` window |
+
+### Admin · tenants
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST   | `/admin/v1/tenants` | Upsert tenant (optional `app_id`) |
+| GET    | `/admin/v1/tenants` | List with `?app_id=&name=&limit=&offset=&include_deleted=` |
+| GET    | `/admin/v1/tenants/{id}` | Fetch (excludes soft-deleted) |
+| DELETE | `/admin/v1/tenants/{id}` | **Hard cascade** — drops dependent rows; use for cleanup paths |
+| POST   | `/admin/v1/tenants/{id}/soft-delete` | **Production offboarding** — sets `deleted_at`, preserves audit trail |
+| PATCH  | `/admin/v1/tenants/{id}/budget` | Replace budget limits |
+| PATCH  | `/admin/v1/tenants/{id}/allowed-plugins` | Replace tenant-level plugin allow-list |
+| PATCH  | `/admin/v1/tenants/{id}/app` | Attach (`{app_id: "..."}`) or detach (`{app_id: null}`) from an app |
+| PUT    | `/admin/v1/tenants/{id}/admin-scope` | Provision/rotate per-tenant scope token |
+| GET    | `/admin/v1/tenants/{id}/budget-state` | Daily token burn + rollover + active threads |
+| GET    | `/admin/v1/tenants/{id}/credentials` | List provisioned plugins (plaintext never returned) |
+| PUT    | `/admin/v1/tenants/{id}/credentials/{plugin_id}` | Provision encrypted credentials |
+| DELETE | `/admin/v1/tenants/{id}/credentials/{plugin_id}` | Drop credentials |
+| GET    | `/admin/v1/tenants/{id}/audit-events` | Paginated keyset reader; `?since=&until=&kind=&thread_id=&workspace_id=&limit=&before_cursor=` |
+| GET    | `/admin/v1/tenants/{id}/threads` | List threads (`?workspace_id=&before=&limit=`) |
+
+### Admin · plans + assignments
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST   | `/admin/v1/tenants/{tenant_id}/plans` | Create plan |
+| GET    | `/admin/v1/tenants/{tenant_id}/plans` | List |
+| GET    | `/admin/v1/tenants/{tenant_id}/plans/{plan_id}` | Fetch |
+| PATCH  | `/admin/v1/tenants/{tenant_id}/plans/{plan_id}` | Partial update |
+| DELETE | `/admin/v1/tenants/{tenant_id}/plans/{plan_id}` | Delete; 409 if assignments reference it |
+| PATCH  | `/admin/v1/tenants/{tenant_id}/default-plan` | Atomic default swap |
+| PUT    | `/admin/v1/tenants/{tenant_id}/assignments` | Upsert (user, workspace) → plan binding |
+| GET    | `/admin/v1/tenants/{tenant_id}/assignments` | List |
+| DELETE | `/admin/v1/tenants/{tenant_id}/assignments` | Delete by query scope |
+
+### Admin · threads observability
+
+Tenant scope arrives as `?tenant_id=`; cross-tenant probes return 404
+(no existence leak).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/admin/v1/threads/{thread_id}` | Fetch one |
+| GET | `/admin/v1/threads/{thread_id}/messages` | Paginated message summaries (no content payload) |
+| GET | `/admin/v1/threads/{thread_id}/usage` | Cumulative tokens billed to the thread |
+
+### Admin · workspaces + plugins + health
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST   | `/admin/v1/workspaces` | Upsert workspace |
+| GET    | `/admin/v1/workspaces` | List with `?tenant_id=&app_id=&limit=&offset=` |
+| GET    | `/admin/v1/workspaces/{id}?tenant_id=` | Fetch |
+| PATCH  | `/admin/v1/workspaces/{id}/instructions?tenant_id=` | Replace global-instructions guardrail |
+| PATCH  | `/admin/v1/workspaces/{id}/allowed-plugins?tenant_id=` | Replace allow-list |
+| DELETE | `/admin/v1/workspaces/{id}?tenant_id=` | Cascade-delete workspace + threads |
+| GET    | `/admin/v1/plugins` | List registered plugins (manifest + actions) |
+| PUT    | `/admin/v1/plugins/{plugin_id}/owners` | Set owning tenants (empty = global) |
+| GET    | `/admin/v1/health/deep` | Sync probe of Postgres + Redis + NATS |
+
+---
+
 ## Build, lint, test
 
 All commands run from the repo root.
@@ -124,8 +218,11 @@ which CI can treat as "skipped" without failing the build.
    expose `DATABASE_URL`, `REDIS_URL`, and `NATS_URL` automatically.
 4. Set the env vars from the table below. The `.env.local` file in
    this repo lists them all in `KEY=value` form.
-5. Health-check path is `/admin/v1/health/deep`. Restart policy is
-   `ON_FAILURE` with up to 10 retries (already in `railway.json`).
+5. Container health-check is `/health`. Operator-facing deep probe is
+   `GET /admin/v1/health/deep` (Postgres + Redis + NATS); Kubernetes
+   readiness probe is `GET /ready` (Postgres + NATS only, no admin
+   token required). Restart policy is `ON_FAILURE` with up to 10
+   retries (already in `railway.json`).
 
 `elena-server` runs `Store::run_migrations()` unconditionally at
 startup, so a fresh deployment applies migrations on first boot. See
@@ -220,6 +317,12 @@ are missing — partial provisioning is fine.
 | Add a new built-in tool | `crates/elena-tools/src/tool.rs` (the trait), then register in the boot path in `bins/elena-server/src/main.rs` |
 | Add a new plugin connector | Copy `bins/elena-connector-echo/`, implement `pb::elena_plugin_server::ElenaPlugin`, register endpoint via `ELENA_PLUGIN_ENDPOINTS` |
 | Add an admin route | `crates/elena-admin/src/router.rs` + a new module under `crates/elena-admin/src/` |
+| Add or manage an app (Solen / Hannlys / Omnii) | `crates/elena-admin/src/apps.rs`. Apps are an admin grouping above tenants — runtime stays tenant-scoped |
+| Onboard a tenant under an app | `POST /admin/v1/apps/{id}/tenants` (`apps::onboard_tenant`) — atomic create + default plan seed |
+| Read audit history over HTTP | `crates/elena-store/src/audit_read.rs` (keyset cursor) + `crates/elena-admin/src/audit.rs` |
+| Observe a tenant's threads / messages / usage | `crates/elena-admin/src/threads.rs` (`/admin/v1/tenants/{id}/threads`, `/threads/{id}/{messages,usage}`) |
+| Read current consumption | `/admin/v1/tenants/{id}/budget-state`, `/admin/v1/apps/{id}/usage-summary` (`crates/elena-admin/src/budget.rs`) |
+| Soft-delete a tenant | `POST /admin/v1/tenants/{id}/soft-delete` — sets `deleted_at`, runtime treats as nonexistent, audit trail preserved |
 | Change loop behaviour (phases, approvals, retry) | `crates/elena-core/src/{state,step,loop_driver}.rs` |
 | Add a database migration | New `.sql` file in `crates/elena-store/migrations/` (timestamped, additive only — never destructive ALTER/DROP) |
 | Add a Prometheus metric | `crates/elena-observability/src/metrics.rs`; thread it through `LoopDeps.metrics` |
