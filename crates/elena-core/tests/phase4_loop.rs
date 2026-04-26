@@ -48,12 +48,25 @@ use wiremock::{
 // ---------------------------------------------------------------------------
 
 struct Harness {
-    _pg: ContainerAsync<GenericImage>,
-    _redis: ContainerAsync<GenericImage>,
+    pg: ContainerAsync<GenericImage>,
+    redis: ContainerAsync<GenericImage>,
     mock: MockServer,
     store: Arc<Store>,
     deps: Arc<elena_core::LoopDeps>,
     tenant: TenantContext,
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        // Synchronous best-effort cleanup. The testcontainers crate's Drop
+        // spawns an async task that often does not complete before the
+        // test process exits, leaking containers across runs.
+        let _ = std::process::Command::new("docker")
+            .args(["rm", "-f"])
+            .arg(self.pg.id())
+            .arg(self.redis.id())
+            .output();
+    }
 }
 
 async fn harness(embedder: Arc<dyn Embedder>) -> Harness {
@@ -177,7 +190,7 @@ async fn harness(embedder: Arc<dyn Embedder>) -> Harness {
         defaults: Arc::new(DefaultsConfig::default()),
     });
 
-    Harness { _pg: pg, _redis: redis, mock, store: store_arc, deps, tenant }
+    Harness { pg, redis, mock, store: store_arc, deps, tenant }
 }
 
 // ---------------------------------------------------------------------------
